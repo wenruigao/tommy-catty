@@ -13,6 +13,22 @@ llm:
   # 降级供应商（主供应商失败时自动切换）
   fallback_provider: "qwen"
 
+  # ── 重试策略 ──
+  retry:
+    max_retries: 3              # 最大重试次数（不含首次调用）
+    base_backoff_ms: 500        # 基础退避时间（毫秒）
+    max_backoff_ms: 30000       # 最大退避时间上限（毫秒）
+    backoff_multiplier: 2.0     # 退避倍数（指数增长因子）
+    jitter_factor: 0.2          # 抖动因子（0.0~1.0），防止惊群效应
+    retry_on_unknown: true      # 未知错误是否重试
+    max_total_timeout_s: 120    # 所有重试的总时间上限（秒）
+
+  # ── 熔断器 ──
+  circuit_breaker:
+    failure_threshold: 5        # 连续失败多少次后触发熔断
+    success_threshold: 2        # 半开状态下连续成功多少次后恢复
+    open_timeout_s: 60          # 熔断后多久进入半开状态（秒）
+
   # 模型供应商列表 — 按需增删，无需改代码
   providers:
     deepseek:

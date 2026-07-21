@@ -40,6 +40,48 @@ type LLMConfig struct {
 
 	// FallbackProvider 降级供应商名称
 	FallbackProvider string `yaml:"fallback_provider"`
+
+	// Retry 重试策略配置
+	Retry *RetryEntry `yaml:"retry"`
+
+	// CircuitBreaker 熔断器配置
+	CircuitBreaker *CircuitBreakerEntry `yaml:"circuit_breaker"`
+}
+
+// RetryEntry 重试策略 YAML 配置
+type RetryEntry struct {
+	// MaxRetries 最大重试次数（不含首次调用，默认 3）
+	MaxRetries int `yaml:"max_retries"`
+
+	// BaseBackoffMs 基础退避时间（毫秒，默认 500）
+	BaseBackoffMs int `yaml:"base_backoff_ms"`
+
+	// MaxBackoffMs 最大退避时间上限（毫秒，默认 30000）
+	MaxBackoffMs int `yaml:"max_backoff_ms"`
+
+	// BackoffMultiplier 退避倍数（默认 2.0）
+	BackoffMultiplier float64 `yaml:"backoff_multiplier"`
+
+	// JitterFactor 抖动因子 0.0~1.0（默认 0.2）
+	JitterFactor float64 `yaml:"jitter_factor"`
+
+	// RetryOnUnknown 未知错误是否重试（默认 true）
+	RetryOnUnknown bool `yaml:"retry_on_unknown"`
+
+	// MaxTotalTimeoutS 所有重试的总时间上限（秒，默认 120）
+	MaxTotalTimeoutS int `yaml:"max_total_timeout_s"`
+}
+
+// CircuitBreakerEntry 熔断器 YAML 配置
+type CircuitBreakerEntry struct {
+	// FailureThreshold 连续失败多少次后触发熔断（默认 5）
+	FailureThreshold int `yaml:"failure_threshold"`
+
+	// SuccessThreshold 半开状态下连续成功多少次后恢复（默认 2）
+	SuccessThreshold int `yaml:"success_threshold"`
+
+	// OpenTimeoutS 熔断后多久进入半开状态（秒，默认 60）
+	OpenTimeoutS int `yaml:"open_timeout_s"`
 }
 
 // ProviderEntry 单个模型供应商的配置条目
@@ -116,11 +158,36 @@ func (c *Config) ToGatewayConfig() llm.GatewayConfig {
 			Headers:          entry.Headers,
 		}
 	}
-	return llm.GatewayConfig{
+
+	gwCfg := llm.GatewayConfig{
 		Providers:        providers,
 		DefaultProvider:  c.LLM.DefaultProvider,
 		FallbackProvider: c.LLM.FallbackProvider,
 	}
+
+	// 映射重试配置
+	if c.LLM.Retry != nil {
+		gwCfg.Retry = &llm.RetryConfig{
+			MaxRetries:        c.LLM.Retry.MaxRetries,
+			BaseBackoffMs:     c.LLM.Retry.BaseBackoffMs,
+			MaxBackoffMs:      c.LLM.Retry.MaxBackoffMs,
+			BackoffMultiplier: c.LLM.Retry.BackoffMultiplier,
+			JitterFactor:      c.LLM.Retry.JitterFactor,
+			RetryOnUnknown:    c.LLM.Retry.RetryOnUnknown,
+			MaxTotalTimeoutS:  c.LLM.Retry.MaxTotalTimeoutS,
+		}
+	}
+
+	// 映射熔断器配置
+	if c.LLM.CircuitBreaker != nil {
+		gwCfg.CircuitBreaker = &llm.CircuitBreakerYAMLConfig{
+			FailureThreshold: c.LLM.CircuitBreaker.FailureThreshold,
+			SuccessThreshold: c.LLM.CircuitBreaker.SuccessThreshold,
+			OpenTimeoutS:     c.LLM.CircuitBreaker.OpenTimeoutS,
+		}
+	}
+
+	return gwCfg
 }
 
 // applyDefaults 填充默认值
@@ -187,5 +254,3 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
-
-// unused import guard

@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/tommy-cat/agent/config"
+	"github.com/tommy-cat/agent/internal/ctxmgr"
 	"github.com/tommy-cat/agent/internal/doctor"
 	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
@@ -65,12 +66,16 @@ func main() {
 	if entry, ok := cfg.LLM.Providers[cfg.LLM.DefaultProvider]; ok {
 		defaultModel = entry.Model
 	}
+	// 初始化上下文管理器（防止上下文爆炸）
+	ctxManager := ctxmgr.NewManager(ctxmgr.DefaultConfig(), nil)
+
 	eng := engine.NewEngine(engine.EngineConfig{
 		LLM:           &llmClientAdapter{gateway: gateway, model: defaultModel},
 		Tools:         registry,
 		Memory:        mem,
 		MaxIterations: cfg.Engine.MaxIterations,
 		SystemPrompt:  buildSystemPrompt(cfg),
+		CtxManager:    ctxManager,
 	})
 
 	// 启动时快速自检

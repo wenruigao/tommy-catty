@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/tommy-cat/agent/internal/ctxmgr"
 	"github.com/tommy-cat/agent/internal/llm"
 	"github.com/tommy-cat/agent/internal/tool"
 )
@@ -69,21 +70,23 @@ type MemoryStore interface {
 
 // EngineConfig 是创建 Engine 的配置结构。
 type EngineConfig struct {
-	LLM           LLMClient   // LLM 客户端
-	Tools         ToolCaller  // 工具注册表
-	Memory        MemoryStore // 记忆存储
-	MaxIterations int         // 最大迭代次数（默认 20）
-	SystemPrompt  string      // 系统提示词
+	LLM           LLMClient        // LLM 客户端
+	Tools         ToolCaller       // 工具注册表
+	Memory        MemoryStore      // 记忆存储
+	MaxIterations int              // 最大迭代次数（默认 20）
+	SystemPrompt  string           // 系统提示词
+	CtxManager    *ctxmgr.Manager  // 上下文管理器（可选，nil 则不压缩）
 }
 
 // Engine 是 Agent 的核心执行引擎，驱动 ReAct 循环。
 type Engine struct {
-	llmGateway    LLMClient   // LLM 网关
-	toolRegistry  ToolCaller  // 工具注册表
-	memory        MemoryStore // 记忆存储
-	maxIterations int         // 最大迭代次数
-	systemPrompt  string      // 系统提示词
-	state         State       // 当前状态
+	llmGateway    LLMClient       // LLM 网关
+	toolRegistry  ToolCaller      // 工具注册表
+	memory        MemoryStore     // 记忆存储
+	maxIterations int             // 最大迭代次数
+	systemPrompt  string          // 系统提示词
+	state         State           // 当前状态
+	ctxManager    *ctxmgr.Manager // 上下文管理器
 }
 
 // NewEngine 根据配置创建一个新的 Engine 实例。
@@ -105,7 +108,13 @@ func NewEngine(cfg EngineConfig) *Engine {
 		maxIterations: maxIter,
 		systemPrompt:  systemPrompt,
 		state:         StateIdle,
+		ctxManager:    cfg.CtxManager,
 	}
+}
+
+// ContextManager 返回引擎的上下文管理器（可能为 nil）
+func (e *Engine) ContextManager() *ctxmgr.Manager {
+	return e.ctxManager
 }
 
 // defaultSystemPrompt 是默认的系统提示词，指导 LLM 使用 ReAct 格式。

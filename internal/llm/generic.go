@@ -97,9 +97,11 @@ func (p *GenericProvider) Chat(ctx context.Context, req ChatRequest) (ChatRespon
 	}
 	defer resp.Body.Close()
 
+	// 非 200 状态码：返回结构化 APIError，供重试机制分类
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return ChatResponse{}, fmt.Errorf("%s: API error status=%d body=%s", p.cfg.Name, resp.StatusCode, string(respBody))
+		retryAfter := resp.Header.Get("Retry-After")
+		return ChatResponse{}, NewAPIError(p.cfg.Name, resp.StatusCode, string(respBody), retryAfter)
 	}
 
 	var apiResp openAIResponse
@@ -128,10 +130,12 @@ func (p *GenericProvider) ChatStream(ctx context.Context, req ChatRequest) (<-ch
 		return nil, fmt.Errorf("%s: stream request failed: %w", p.cfg.Name, err)
 	}
 
+	// 非 200 状态码：返回结构化 APIError
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s: stream API error status=%d body=%s", p.cfg.Name, resp.StatusCode, string(respBody))
+		retryAfter := resp.Header.Get("Retry-After")
+		return nil, NewAPIError(p.cfg.Name, resp.StatusCode, string(respBody), retryAfter)
 	}
 
 	ch := make(chan StreamChunk, 32)

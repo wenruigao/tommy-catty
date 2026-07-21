@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -15,11 +15,8 @@ var (
 	ErrProviderNotFound = errors.New("llm: provider not found")
 	// ErrAllProvidersFailed 表示所有供应商（含回退）均调用失败
 	ErrAllProvidersFailed = errors.New("llm: all providers failed")
-)
-
-const (
-	maxRetries  = 3                      // 最大重试次数
-	baseBackoff = 500 * time.Millisecond // 基础退避时间
+	// ErrCircuitOpen 表示供应商熔断器已打开
+	ErrCircuitOpen = errors.New("llm: circuit breaker open")
 )
 
 // GatewayConfig 网关配置（从 YAML 配置文件映射）
@@ -32,6 +29,70 @@ type GatewayConfig struct {
 
 	// FallbackProvider 降级供应商名称
 	FallbackProvider string `yaml:"fallback_provider"`
+
+	// Retry 重试策略配置（可选，不配置则使用默认值）
+	Retry *RetryConfig `yaml:"retry"`
+
+	// CircuitBreaker 熔断器配置（可选）
+	CircuitBreaker *CircuitBreakerYAMLConfig `yaml:"circuit_breaker"`
+}
+
+// RetryConfig YAML 可序列化的重试配置
+type RetryConfig struct {
+	MaxRetries        int     `yaml:"max_retries"`
+	BaseBackoffMs     int     `yaml:"base_backoff_ms"`
+	MaxBackoffMs      int     `yaml:"max_backoff_ms"`
+	BackoffMultiplier float64 `yaml:"backoff_multiplier"`
+	JitterFactor      float64 `yaml:"jitter_factor"`
+	RetryOnUnknown    bool    `yaml:"retry_on_unknown"`
+	MaxTotalTimeoutS  int     `yaml:"max_total_timeout_s"`
+}
+
+// ToRetryPolicy 转换为内部 RetryPolicy
+func (rc *RetryConfig) ToRetryPolicy() RetryPolicy {
+	p := DefaultRetryPolicy()
+	if rc.MaxRetries > 0 {
+		p.MaxRetries = rc.MaxRetries
+	}
+	if rc.BaseBackoffMs > 0 {
+		p.BaseBackoff = time.Duration(rc.BaseBackoffMs) * time.Millisecond
+	}
+	if rc.MaxBackoffMs > 0 {
+		p.MaxBackoff = time.Duration(rc.MaxBackoffMs) * time.Millisecond
+	}
+	if rc.BackoffMultiplier > 0 {
+		p.BackoffMultiplier = rc.BackoffMultiplier
+	}
+	if rc.JitterFactor > 0 {
+		p.JitterFactor = rc.JitterFactor
+	}
+	p.RetryOnUnknown = rc.RetryOnUnknown
+	if rc.MaxTotalTimeoutS > 0 {
+		p.MaxTotalTimeout = time.Duration(rc.MaxTotalTimeoutS) * time.Second
+	}
+	return p
+}
+
+// CircuitBreakerYAMLConfig YAML 可序列化的熔断器配置
+type CircuitBreakerYAMLConfig struct {
+	FailureThreshold int `yaml:"failure_threshold"`
+	SuccessThreshold int `yaml:"success_threshold"`
+	OpenTimeoutS     int `yaml:"open_timeout_s"`
+}
+
+// ToConfig 转换为内部 CircuitBreakerConfig
+func (c *CircuitBreakerYAMLConfig) ToConfig() CircuitBreakerConfig {
+	cfg := DefaultCircuitBreakerConfig()
+	if c.FailureThreshold > 0 {
+		cfg.FailureThreshold = c.FailureThreshold
+	}
+	if c.SuccessThreshold > 0 {
+		cfg.SuccessThreshold = c.SuccessThreshold
+	}
+	if c.OpenTimeoutS > 0 {
+		cfg.OpenTimeout = time.Duration(c.OpenTimeoutS) * time.Second
+	}
+	return cfg
 }
 
 // Gateway 是 LLM 供应商的统一网关，负责路由、重试和故障回退
@@ -41,22 +102,49 @@ type Gateway struct {
 	defaultProvider  string
 	fallbackProvider string
 	httpClient       *http.Client
+	retryExecutor    *RetryExecutor
 }
 
-// NewGateway 创建一个空的 LLM 网关实例
+// NewGateway 创建一个空的 LLM 网关实例（使用默认重试策略）
 func NewGateway() *Gateway {
+	return NewGatewayWithRetry(DefaultRetryPolicy(), DefaultCircuitBreakerConfig())
+}
+
+// NewGatewayWithRetry 创建带有自定义重试策略的网关
+func NewGatewayWithRetry(policy RetryPolicy, cbConfig CircuitBreakerConfig) *Gateway {
+	executor := NewRetryExecutor(policy, cbConfig)
+
+	// 注册默认日志钩子
+	executor.AddHook(func(event RetryEvent) {
+		log.Printf("[RETRY] provider=%s attempt=%d/%d category=%v backoff=%s circuit=%s err=%v",
+			event.Provider, event.Attempt, event.MaxRetries,
+			event.Category, event.Backoff.Round(time.Millisecond),
+			event.CircuitState, event.Error)
+	})
+
 	return &Gateway{
-		providers: make(map[string]LLMProvider),
-		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
-		},
+		providers:     make(map[string]LLMProvider),
+		httpClient:    &http.Client{Timeout: 120 * time.Second},
+		retryExecutor: executor,
 	}
 }
 
 // NewGatewayFromConfig 根据配置创建网关并自动注册所有供应商
 // 这是推荐的初始化方式：所有模型接入完全由配置驱动，无需硬编码
 func NewGatewayFromConfig(cfg GatewayConfig) *Gateway {
-	gw := NewGateway()
+	// 解析重试策略
+	policy := DefaultRetryPolicy()
+	if cfg.Retry != nil {
+		policy = cfg.Retry.ToRetryPolicy()
+	}
+
+	// 解析熔断器配置
+	cbConfig := DefaultCircuitBreakerConfig()
+	if cfg.CircuitBreaker != nil {
+		cbConfig = cfg.CircuitBreaker.ToConfig()
+	}
+
+	gw := NewGatewayWithRetry(policy, cbConfig)
 
 	for name, pcfg := range cfg.Providers {
 		pcfg.Name = name // 确保 name 字段一致
@@ -101,15 +189,22 @@ func (g *Gateway) ListProviders() []string {
 	return names
 }
 
-// Chat 发送聊天请求，自动路由到对应供应商，支持重试和回退
+// RetryExecutor 返回网关的重试执行器（供外部注册钩子等）
+func (g *Gateway) RetryExecutor() *RetryExecutor {
+	return g.retryExecutor
+}
+
+// Chat 发送聊天请求，自动路由到对应供应商，支持重试、熔断和回退
 func (g *Gateway) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	provider, err := g.resolveProvider(req.Model)
 	if err != nil {
 		return ChatResponse{}, err
 	}
 
-	// 带重试的主供应商调用
-	resp, err := g.chatWithRetry(ctx, provider, req)
+	// 使用 RetryExecutor 执行（含重试 + 熔断）
+	resp, err := g.retryExecutor.Execute(ctx, provider.Name(), func(ctx context.Context) (ChatResponse, error) {
+		return provider.Chat(ctx, req)
+	})
 	if err == nil {
 		return resp, nil
 	}
@@ -122,25 +217,31 @@ func (g *Gateway) Chat(ctx context.Context, req ChatRequest) (ChatResponse, erro
 	if fallbackName != "" && fallbackName != provider.Name() {
 		fallback, ferr := g.getProvider(fallbackName)
 		if ferr == nil {
-			resp, ferr = g.chatWithRetry(ctx, fallback, req)
+			resp, ferr = g.retryExecutor.Execute(ctx, fallback.Name(), func(ctx context.Context) (ChatResponse, error) {
+				return fallback.Chat(ctx, req)
+			})
 			if ferr == nil {
 				return resp, nil
 			}
+			return ChatResponse{}, fmt.Errorf("%w: primary(%s): %v; fallback(%s): %v",
+				ErrAllProvidersFailed, provider.Name(), err, fallback.Name(), ferr)
 		}
 	}
 
-	return ChatResponse{}, fmt.Errorf("%w: primary error: %v", ErrAllProvidersFailed, err)
+	return ChatResponse{}, fmt.Errorf("%w: %v", ErrAllProvidersFailed, err)
 }
 
-// ChatStream 发送流式聊天请求，支持回退
+// ChatStream 发送流式聊天请求，支持重试和回退
 func (g *Gateway) ChatStream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
 	provider, err := g.resolveProvider(req.Model)
 	if err != nil {
 		return nil, err
 	}
 
-	// 尝试主供应商
-	ch, err := provider.ChatStream(ctx, req)
+	// 使用 RetryExecutor 执行流式请求（仅重试连接建立阶段）
+	ch, err := g.retryExecutor.ExecuteStream(ctx, provider.Name(), func(ctx context.Context) (<-chan StreamChunk, error) {
+		return provider.ChatStream(ctx, req)
+	})
 	if err == nil {
 		return ch, nil
 	}
@@ -153,14 +254,16 @@ func (g *Gateway) ChatStream(ctx context.Context, req ChatRequest) (<-chan Strea
 	if fallbackName != "" && fallbackName != provider.Name() {
 		fallback, ferr := g.getProvider(fallbackName)
 		if ferr == nil {
-			ch, ferr = fallback.ChatStream(ctx, req)
+			ch, ferr = g.retryExecutor.ExecuteStream(ctx, fallback.Name(), func(ctx context.Context) (<-chan StreamChunk, error) {
+				return fallback.ChatStream(ctx, req)
+			})
 			if ferr == nil {
 				return ch, nil
 			}
 		}
 	}
 
-	return nil, fmt.Errorf("%w: primary error: %v", ErrAllProvidersFailed, err)
+	return nil, fmt.Errorf("%w: %v", ErrAllProvidersFailed, err)
 }
 
 // resolveProvider 根据模型名称或默认配置解析目标供应商
@@ -200,34 +303,4 @@ func (g *Gateway) getProvider(name string) (LLMProvider, error) {
 		return p, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, name)
-}
-
-// chatWithRetry 带指数退避的重试调用
-func (g *Gateway) chatWithRetry(ctx context.Context, provider LLMProvider, req ChatRequest) (ChatResponse, error) {
-	var lastErr error
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// 指数退避: 500ms, 1s, 2s
-			backoff := time.Duration(float64(baseBackoff) * math.Pow(2, float64(attempt-1)))
-			select {
-			case <-ctx.Done():
-				return ChatResponse{}, ctx.Err()
-			case <-time.After(backoff):
-			}
-		}
-
-		resp, err := provider.Chat(ctx, req)
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
-
-		// 如果是上下文取消，不再重试
-		if ctx.Err() != nil {
-			return ChatResponse{}, ctx.Err()
-		}
-	}
-
-	return ChatResponse{}, fmt.Errorf("provider %s failed after %d attempts: %w", provider.Name(), maxRetries, lastErr)
 }
