@@ -1,0 +1,74 @@
+# Tommy-Cat Agent 配置文件
+#
+# 模型接入完全声明式：在 llm.providers 下添加任意数量的供应商即可。
+# 任何兼容 OpenAI Chat Completions API 的服务均可接入，无需修改代码。
+#
+# API Key 支持两种写法:
+#   直接写:   api_key: "sk-xxx"
+#   环境变量: api_key: "${DEEPSEEK_API_KEY}"
+
+llm:
+  # 默认供应商（未指定 model 时使用）
+  default_provider: "deepseek"
+  # 降级供应商（主供应商失败时自动切换）
+  fallback_provider: "qwen"
+
+  # 模型供应商列表 — 按需增删，无需改代码
+  providers:
+    deepseek:
+      base_url: "https://api.deepseek.com/chat/completions"
+      api_key: "${DEEPSEEK_API_KEY}"
+      model: "deepseek-chat"
+      max_tokens: 65536
+      timeout: "120s"
+
+    qwen:
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+      api_key: "${DASHSCOPE_API_KEY}"
+      model: "qwen-max"
+      max_tokens: 32768
+      timeout: "90s"
+
+    # ── 以下为可选接入示例，取消注释即可使用 ──
+
+    # openai:
+    #   base_url: "https://api.openai.com/v1/chat/completions"
+    #   api_key: "${OPENAI_API_KEY}"
+    #   model: "gpt-4o"
+    #   max_tokens: 128000
+
+    # ollama (本地模型):
+    #   base_url: "http://localhost:11434/v1/chat/completions"
+    #   api_key: "ollama"
+    #   model: "qwen2.5:72b"
+    #   max_tokens: 8192
+    #   timeout: "300s"
+
+    # vllm (自部署推理服务):
+    #   base_url: "http://localhost:8000/v1/chat/completions"
+    #   api_key: ""
+    #   model: "Qwen/Qwen2.5-72B-Instruct"
+    #   max_tokens: 32768
+
+    # lm-studio (桌面端本地推理):
+    #   base_url: "http://localhost:1234/v1/chat/completions"
+    #   api_key: "lm-studio"
+    #   model: "local-model"
+    #   max_tokens: 8192
+
+    # 自定义供应商（任何 OpenAI 兼容 API）:
+    # my-custom:
+    #   base_url: "https://my-api.example.com/v1/chat/completions"
+    #   api_key: "${MY_CUSTOM_KEY}"
+    #   model: "my-model-v1"
+    #   max_tokens: 16384
+    #   headers:
+    #     X-Custom-Header: "value"
+
+engine:
+  max_iterations: 20
+  system_prompt: ""
+
+policy_file: "config/policy.yaml"
+skill_store_path: "data/skills.json"
+work_dir: "."

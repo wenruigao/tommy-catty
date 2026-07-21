@@ -1,0 +1,86 @@
+# Tommy-Cat Agent 安全策略配置
+# 策略按 priority 从小到大排序评估（数值越小优先级越高）
+
+policies:
+  - id: block-destructive
+    name: "阻止破坏性操作"
+    description: "拦截包含 rm -rf、DROP TABLE 等破坏性命令的工具调用"
+    priority: 1
+    enabled: true
+    when:
+      tool_names: [shell_exec, code_run]
+      pattern: "(?i)(rm\\s+-rf|drop\\s+table|truncate\\s+table|delete\\s+from|format\\s+[a-z]:)"
+    then:
+      effect: deny
+      message: "检测到破坏性操作，已拦截。如确需执行，请修改安全策略。"
+      notify_channel: security-alerts
+      notify_severity: critical
+
+  - id: protect-secrets
+    name: "敏感信息脱敏"
+    description: "自动脱敏输出中的 API Key、密码等敏感信息"
+    priority: 2
+    enabled: true
+    when:
+      action_type: [llm_output]
+      pattern: "(?i)(sk-[a-zA-Z0-9]{20,}|password\\s*[:=]\\s*\\S+|api[_-]?key\\s*[:=]\\s*\\S+)"
+    then:
+      effect: redact
+      message: "输出中包含敏感信息，已自动脱敏。"
+
+  - id: cost-guard
+    name: "费用上限保护"
+    description: "单次任务 Token 消耗超过设定上限时需用户确认"
+    priority: 3
+    enabled: true
+    when:
+      max_cost: 10.0
+    then:
+      effect: require_approval
+      message: "本次任务预计消耗超过 10 元，是否继续执行？"
+
+  - id: office-hours
+    name: "工作时间限制"
+    description: "非工作时间（09:00-18:00）禁止执行高危操作"
+    priority: 4
+    enabled: false
+    when:
+      tool_risk: ["3"]
+      time_range: "09:00-18:00"
+    then:
+      effect: deny
+      message: "当前为非工作时间，高危操作已禁止。"
+
+  - id: rate-limiter
+    name: "调用频率限制"
+    description: "防止 Agent 进入失控循环，限制工具调用频率"
+    priority: 5
+    enabled: true
+    when:
+      action_type: [tool_call]
+    then:
+      effect: throttle
+      message: "工具调用频率过高，已触发限流保护。"
+
+  - id: scope-fence
+    name: "文件访问范围限制"
+    description: "限制文件操作在工作目录范围内"
+    priority: 6
+    enabled: true
+    when:
+      tool_names: [file_read, file_write]
+      pattern: "(/etc/|/usr/|/System/|/var/|~/.ssh)"
+    then:
+      effect: deny
+      message: "文件操作超出允许的工作目录范围。"
+
+  - id: output-review
+    name: "大量输出审查"
+    description: "最终输出超过 5000 字时需人工审查"
+    priority: 7
+    enabled: false
+    when:
+      action_type: [llm_output]
+    then:
+      effect: require_approval
+      message: "输出内容较长（>5000字），建议人工审查后发布。"
