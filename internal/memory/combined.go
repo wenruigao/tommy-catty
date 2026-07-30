@@ -125,3 +125,15 @@ func (cm *CombinedMemory) Search(query string, topK int) []string {
 	}
 	return results
 }
+
+// Clear 清除工作记忆（以及长期记忆，如果可用）。
+func (cm *CombinedMemory) Clear() error {
+	ctx := context.Background()
+	if err := cm.working.Clear(ctx); err != nil {
+		return err
+	}
+	if cm.longTerm != nil {
+		return cm.longTerm.Clear(ctx)
+	}
+	return nil
+}

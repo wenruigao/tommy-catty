@@ -88,3 +88,52 @@ engine:
 policy_file: "config/policy.yaml"
 skill_store_path: "data/skills.json"
 work_dir: "."
+
+# ────────────────────────────────────────────────────────────
+# 数据库只读查询（db_query 工具）
+# ────────────────────────────────────────────────────────────
+# 每个条目是一个数据源，key 为数据源名称（调用 db_query 时通过 datasource 指定）。
+# 安全保证：仅放行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH；多重防御（语句白名单、
+# 危险模式拦截、表/列权限、LIMIT 注入），建议数据库侧再使用只读账号。
+#
+# databases:
+#   analytics:
+#     driver: "mysql"                 # mysql | postgres | sqlite
+#     dsn: "${ANALYTICS_DB_DSN}"      # 例如 user:pass@tcp(host:3306)/dbname
+#     max_open_conns: 5
+#     max_idle_conns: 2
+#     conn_max_lifetime: "30m"
+#     query_timeout: "30s"
+#     max_rows: 500                   # 结果集行数硬上限
+#     allow_union: false              # 是否允许 UNION
+#     allow_subquery: true            # 是否允许子查询
+#     allowed_tables:                 # 表名白名单（支持 * 通配符）
+#       - "orders"
+#       - "users"
+#       - "analytics_*"
+#     denied_columns:                 # 列黑名单（table.column 或 *.column）
+#       - "users.password_hash"
+#       - "*.secret_key"
+#
+#   local_sqlite:
+#     driver: "sqlite"
+#     dsn: "./data/app.db"
+#     allowed_tables: ["*"]
+
+# ────────────────────────────────────────────────────────────
+# 本地知识库（kb_search / kb_read / kb_list 工具）
+# ────────────────────────────────────────────────────────────
+# 启动时扫描 paths 下的文本文件，分块后建立内存倒排索引（BM25 检索）。
+#
+# knowledge_bases:
+#   - name: "project_docs"
+#     paths:
+#       - "./docs"
+#       - "./README.md"
+#     exclude: ["node_modules", "*.min.js"]
+#     extensions: [".md", ".txt", ".go"]
+#     strategy: "auto"                # auto | heading | paragraph
+#     max_tokens: 500                 # 每块最大 token
+#     overlap: 100                    # 滑动窗口重叠
+#     max_file_mb: 5                  # 单文件大小上限
+#     top_k: 5                        # 默认检索返回数

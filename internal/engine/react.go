@@ -14,6 +14,7 @@ import (
 
 // Run 执行 ReAct 循环，处理用户目标并返回完整的执行追踪。
 // 循环流程：构建提示 -> 上下文压缩 -> 调用 LLM -> 处理工具调用 -> 追加观察 -> 重复直到得出最终答案。
+// Engine 是无状态的，state 作为局部变量在本次调用内跟踪，支持并发安全。
 func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) {
 	// 初始化执行追踪
 	trace := &ExecutionTrace{
@@ -23,7 +24,8 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 		StartTime: time.Now(),
 	}
 
-	e.state = StatePlanning
+	state := StatePlanning
+	_ = state // 状态用于追踪，不影响逻辑分支
 
 	// 构建初始消息列表
 	messages := e.buildInitialMessages(goal)
@@ -38,7 +40,6 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 		case <-ctx.Done():
 			trace.EndTime = time.Now()
 			trace.Error = "context cancelled: " + ctx.Err().Error()
-			e.state = StateError
 			return trace, ctx.Err()
 		default:
 		}
@@ -47,12 +48,11 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 		messages = e.applyContextManagement(ctx, messages)
 
 		// 调用 LLM 获取响应
-		e.state = StatePlanning
+		state = StatePlanning
 		resp, err := e.llmGateway.Chat(ctx, messages, toolDefs)
 		if err != nil {
 			trace.EndTime = time.Now()
 			trace.Error = fmt.Sprintf("LLM 调用失败 (迭代 %d): %v", i+1, err)
-			e.state = StateError
 			return trace, fmt.Errorf("llm chat failed at iteration %d: %w", i+1, err)
 		}
 
@@ -62,7 +62,7 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 		// 判断是否有工具调用
 		if len(resp.ToolCalls) == 0 {
 			// 没有工具调用，视为最终答案
-			e.state = StateFinishing
+			state = StateFinishing
 			step := StepResult{
 				Thought:     resp.Content,
 				IsFinal:     true,
@@ -74,12 +74,12 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 			e.storeToMemory(messages, resp.Content)
 
 			trace.EndTime = time.Now()
-			e.state = StateIdle
+			_ = state
 			return trace, nil
 		}
 
 		// 有工具调用，逐个执行
-		e.state = StateExecuting
+		state = StateExecuting
 
 		// 将 assistant 的回复内容追加到对话历史（如果有思考内容）
 		if resp.Content != "" {
@@ -116,7 +116,7 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 			observation := e.preprocessToolOutput(tc.Name, step.Observation)
 
 			// 将工具结果追加到对话历史
-			e.state = StateObserving
+			state = StateObserving
 			toolMsg := llm.Message{
 				Role:    "tool",
 				Content: fmt.Sprintf("[%s] %s", tc.Name, observation),
@@ -128,7 +128,6 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 	// 超过最大迭代次数
 	trace.EndTime = time.Now()
 	trace.Error = fmt.Sprintf("超过最大迭代次数 (%d)，未能得出最终答案", e.maxIterations)
-	e.state = StateError
 	return trace, fmt.Errorf("max iterations (%d) exceeded without final answer", e.maxIterations)
 }
 

@@ -10,6 +10,7 @@ import (
 // MemoryEntry 表示一条记忆条目。
 type MemoryEntry struct {
 	ID        string    // 唯一标识
+	UserID    string    // 归属用户（多用户隔离标识）
 	Content   string    // 记忆内容
 	Timestamp time.Time // 创建时间
 	Tags      []string  // 标签，用于分类和检索

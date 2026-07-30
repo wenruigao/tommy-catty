@@ -73,9 +73,9 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 	return Result{
 		Output: sb.String(),
 		Metadata: map[string]interface{}{
-			"query":       query,
+			"query":        query,
 			"result_count": maxResults,
-			"source":      "placeholder",
+			"source":       "placeholder",
 		},
 	}, nil
 }
@@ -178,10 +178,10 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]interface{})
 	return Result{
 		Output: content,
 		Metadata: map[string]interface{}{
-			"url":           urlStr,
-			"status_code":   resp.StatusCode,
-			"content_type":  resp.Header.Get("Content-Type"),
-			"truncated":     truncated,
+			"url":            urlStr,
+			"status_code":    resp.StatusCode,
+			"content_type":   resp.Header.Get("Content-Type"),
+			"truncated":      truncated,
 			"content_length": len(content),
 		},
 	}, nil
@@ -435,9 +435,9 @@ func (t *FileWriteTool) Execute(ctx context.Context, args map[string]interface{}
 	return Result{
 		Output: fmt.Sprintf("successfully wrote %d bytes to %s (%s mode)", n, path, mode),
 		Metadata: map[string]interface{}{
-			"path":       path,
+			"path":          path,
 			"bytes_written": n,
-			"mode":       mode,
+			"mode":          mode,
 		},
 	}, nil
 }
@@ -588,7 +588,7 @@ func NewShellExecTool() *ShellExecTool {
 			"rm -rf /",
 			"mkfs",
 			"dd if=",
-			":(){ :|:& };:",  // fork bomb
+			":(){ :|:& };:", // fork bomb
 			"shutdown",
 			"reboot",
 			"halt",

@@ -1,5 +1,6 @@
 // Tommy-Cat Agent — 通用任务智能体
 // 基于 ReAct 循环的 AI Agent，支持多模型、工具调用、记忆系统、安全策略和 Skill 自动生成
+// 支持 CLI（单用户）和 HTTP（多用户）两种运行模式
 package main
 
 import (
@@ -12,12 +13,13 @@ import (
 	"syscall"
 
 	"github.com/tommy-cat/agent/config"
+	"github.com/tommy-cat/agent/internal/bootstrap"
 	"github.com/tommy-cat/agent/internal/ctxmgr"
 	"github.com/tommy-cat/agent/internal/doctor"
 	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/memory"
 	"github.com/tommy-cat/agent/internal/security"
+	"github.com/tommy-cat/agent/internal/session"
 	"github.com/tommy-cat/agent/internal/skill"
 	"github.com/tommy-cat/agent/internal/tool"
 	"github.com/tommy-cat/agent/internal/trace"
@@ -30,7 +32,7 @@ const banner = `
    | | (_) | | | | | | | | | | | (_| | | |__| (_| | |_
    |_|\___/|_| |_| |_|_| |_| |_|\__,_|  \____\__,_|\__|
 
-  通用任务智能体 v0.1.0
+  通用任务智能体 v0.2.0 (multi-user)
   输入任务描述开始执行，输入 /quit 退出，/help 查看帮助
 `
 
@@ -47,8 +49,15 @@ func main() {
 	registry := tool.NewRegistry()
 	tool.RegisterBuiltinTools(registry)
 
-	// 初始化记忆系统
-	mem := memory.NewCombinedMemory(memory.NewWorkingMemory(100), nil)
+	// 构建数据源连接池与知识库，并注册 db_query / kb_* 工具
+	dataTools := bootstrap.RegisterDataTools(cfg, registry)
+	defer dataTools.Close()
+	if dataTools.DBCount > 0 || dataTools.KBCount > 0 {
+		fmt.Printf("  🗄️  已加载 %d 个数据源，%d 个知识库\n", dataTools.DBCount, dataTools.KBCount)
+	}
+	for _, w := range dataTools.Warnings {
+		fmt.Printf("  ⚠️  %s\n", w)
+	}
 
 	// 初始化安全策略引擎
 	secEngine := initSecurityEngine(cfg)
@@ -58,30 +67,43 @@ func main() {
 	skillMatcher := skill.NewMatcher(skillStore)
 	skillGen := skill.NewGenerator(skillStore)
 
-	// 初始化追踪器
+	// 初始化追踪器（CLI 模式全局）
 	tracer := trace.NewTracer()
 
-	// 初始化 Agent 引擎
+	// 构建共享依赖
 	defaultModel := ""
 	if entry, ok := cfg.LLM.Providers[cfg.LLM.DefaultProvider]; ok {
 		defaultModel = entry.Model
 	}
-	// 初始化上下文管理器（防止上下文爆炸）
-	ctxManager := ctxmgr.NewManager(ctxmgr.DefaultConfig(), nil)
 
-	eng := engine.NewEngine(engine.EngineConfig{
-		LLM:           &llmClientAdapter{gateway: gateway, model: defaultModel},
+	llmAdapter := &llmClientAdapter{gateway: gateway, model: defaultModel}
+
+	// 初始化 SessionManager（统一管理用户会话）
+	deps := session.SessionDeps{
+		LLM:           llmAdapter,
 		Tools:         registry,
-		Memory:        mem,
 		MaxIterations: cfg.Engine.MaxIterations,
 		SystemPrompt:  buildSystemPrompt(cfg),
-		CtxManager:    ctxManager,
-	})
+		MemorySize:    cfg.Session.MemorySize,
+		CtxConfig:     ctxmgr.DefaultConfig(),
+		Summarizer:    nil,
+		RateLimit: session.RateLimitConfig{
+			RequestsPerMinute: cfg.Session.RequestsPerMinute,
+		},
+	}
+
+	smCfg := session.ManagerConfig{
+		MaxSessions:     cfg.Session.MaxSessions,
+		SessionTTL:      cfg.SessionTTLDuration(),
+		CleanupInterval: cfg.SessionCleanupDuration(),
+	}
+	sessionMgr := session.NewSessionManager(smCfg, deps)
+	defer sessionMgr.Shutdown()
 
 	// 启动时快速自检
 	startupQuickCheck(cfg)
 
-	// 交互式 REPL
+	// 交互式 REPL（CLI 模式，userID 固定为 "local"）
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -92,8 +114,12 @@ func main() {
 		<-sigCh
 		fmt.Println("\n正在退出...")
 		cancel()
+		sessionMgr.Shutdown()
 		os.Exit(0)
 	}()
+
+	// 获取 "local" 用户会话
+	localSession := sessionMgr.GetOrCreate("local")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -108,7 +134,7 @@ func main() {
 
 		// 命令处理
 		if strings.HasPrefix(input, "/") {
-			handleCommand(input, cfg, skillStore, skillMatcher, skillGen, secEngine, tracer)
+			handleCommand(input, cfg, skillStore, skillMatcher, skillGen, secEngine, tracer, localSession)
 			continue
 		}
 
@@ -126,24 +152,29 @@ func main() {
 			fmt.Printf("  💡 匹配到 Skill「%s」(置信度 %.0f%%)，将参考其执行流程\n", matched.Name, score*100)
 		}
 
-		// 执行任务
+		// 执行任务（通过 session 串行）
 		fmt.Println("  ⏳ 正在执行...")
-		tracer.Reset()
-		result, err := eng.Run(ctx, input)
+		result, err := localSession.Run(ctx, input)
 		if err != nil {
-			fmt.Printf("  ❌ 执行失败: %v\n", err)
+			if err == session.ErrRateLimited {
+				fmt.Println("  ⏸️  请求过于频繁，请稍后再试。")
+			} else {
+				fmt.Printf("  ❌ 执行失败: %v\n", err)
+			}
 			continue
 		}
 
 		// 输出结果
 		fmt.Printf("\n  ✅ 完成 (耗时 %s, Token: %d)\n",
 			result.EndTime.Sub(result.StartTime).Round(1e6), result.TokenUsage)
-		fmt.Printf("  📝 %s\n", result.Steps[len(result.Steps)-1].FinalAnswer)
+		if len(result.Steps) > 0 {
+			fmt.Printf("  📝 %s\n", result.Steps[len(result.Steps)-1].FinalAnswer)
+		}
 
 		// 安全策略检查（任务结束）
 		secEngine.Evaluate(security.Checkpoint{
 			Type: "task_end",
-			Cost: float64(result.TokenUsage) * 0.00001, // 粗略估算
+			Cost: float64(result.TokenUsage) * 0.00001,
 		})
 
 		// 尝试自动生成 Skill
@@ -165,7 +196,7 @@ func loadConfig() *config.Config {
 	return cfg
 }
 
-// initLLMGateway 初始化 LLM 网关（完全由配置驱动，支持任意 OpenAI 兼容模型）
+// initLLMGateway 初始化 LLM 网关
 func initLLMGateway(cfg *config.Config) *llm.Gateway {
 	gwCfg := cfg.ToGatewayConfig()
 	gw := llm.NewGatewayFromConfig(gwCfg)
@@ -183,12 +214,10 @@ func initLLMGateway(cfg *config.Config) *llm.Gateway {
 func initSecurityEngine(cfg *config.Config) *security.Engine {
 	eng := security.NewEngine()
 
-	// 加载内置策略模板
 	for _, p := range security.DefaultPolicies() {
 		eng.AddPolicy(p)
 	}
 
-	// 加载自定义策略文件
 	if data, err := os.ReadFile(cfg.PolicyFile); err == nil {
 		if err := eng.LoadFromYAML(data); err != nil {
 			fmt.Printf("  ⚠️  策略文件解析失败: %v\n", err)
@@ -210,7 +239,7 @@ func buildSystemPrompt(cfg *config.Config) string {
 }
 
 // handleCommand 处理斜杠命令
-func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher *skill.Matcher, gen *skill.Generator, sec *security.Engine, tracer *trace.Tracer) {
+func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher *skill.Matcher, gen *skill.Generator, sec *security.Engine, tracer *trace.Tracer, sess *session.UserSession) {
 	cmd := strings.Fields(input)
 	switch cmd[0] {
 	case "/quit", "/exit", "/q":
@@ -240,7 +269,7 @@ func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher
 	case "/policies":
 		fmt.Println("  安全策略已加载（使用内置模板 + 自定义配置）")
 	case "/trace":
-		spans := tracer.GetSpans()
+		spans := sess.Tracer().GetSpans()
 		if len(spans) == 0 {
 			fmt.Println("  暂无追踪数据。")
 		}
@@ -249,6 +278,7 @@ func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher
 				s.SpanID, s.Name, s.EndTime.Sub(s.StartTime).Round(1e6), s.Status)
 		}
 	case "/clear":
+		sess.ClearMemory()
 		fmt.Println("  记忆已清空。")
 	default:
 		fmt.Printf("  未知命令: %s，输入 /help 查看帮助\n", cmd[0])
@@ -280,11 +310,9 @@ func checkDecisions(decisions []security.Decision) bool {
 
 // tryGenerateSkill 尝试从执行结果自动生成 Skill
 func tryGenerateSkill(gen *skill.Generator, result *engine.ExecutionTrace) {
-	// 仅对多步骤任务生成 Skill（至少 3 步）
 	if len(result.Steps) < 3 {
 		return
 	}
-	// 简单序列化 trace 用于生成
 	traceJSON := fmt.Sprintf(`{"goal":"%s","steps":%d,"tools_used":true}`, result.Goal, len(result.Steps))
 	s, err := gen.GenerateFromTrace(traceJSON)
 	if err != nil {
@@ -304,7 +332,7 @@ func runDoctor(cfg *config.Config) {
 	fmt.Print(report.Format())
 }
 
-// startupQuickCheck 启动时快速自检（仅 Critical 级别）
+// startupQuickCheck 启动时快速自检
 func startupQuickCheck(cfg *config.Config) {
 	d := doctor.New()
 	doctor.RegisterAllChecks(d, buildDoctorConfig(cfg))

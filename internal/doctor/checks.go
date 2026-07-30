@@ -20,10 +20,10 @@ import (
 
 // DoctorConfig Doctor 检查所需的配置信息
 type DoctorConfig struct {
-	ConfigPath     string            // config.yaml 路径
-	PolicyPath     string            // policy.yaml 路径
-	SkillStorePath string            // skills.json 路径
-	WorkDir        string            // 工作目录
+	ConfigPath     string                       // config.yaml 路径
+	PolicyPath     string                       // policy.yaml 路径
+	SkillStorePath string                       // skills.json 路径
+	WorkDir        string                       // 工作目录
 	Providers      map[string]ProviderCheckInfo // LLM 供应商信息
 }
 

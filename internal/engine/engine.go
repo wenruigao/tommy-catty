@@ -70,22 +70,22 @@ type MemoryStore interface {
 
 // EngineConfig 是创建 Engine 的配置结构。
 type EngineConfig struct {
-	LLM           LLMClient        // LLM 客户端
-	Tools         ToolCaller       // 工具注册表
-	Memory        MemoryStore      // 记忆存储
-	MaxIterations int              // 最大迭代次数（默认 20）
-	SystemPrompt  string           // 系统提示词
-	CtxManager    *ctxmgr.Manager  // 上下文管理器（可选，nil 则不压缩）
+	LLM           LLMClient       // LLM 客户端
+	Tools         ToolCaller      // 工具注册表
+	Memory        MemoryStore     // 记忆存储
+	MaxIterations int             // 最大迭代次数（默认 20）
+	SystemPrompt  string          // 系统提示词
+	CtxManager    *ctxmgr.Manager // 上下文管理器（可选，nil 则不压缩）
 }
 
 // Engine 是 Agent 的核心执行引擎，驱动 ReAct 循环。
+// Engine 是无状态的（不持有跨请求的可变字段），可被多个 session 安全共享。
 type Engine struct {
 	llmGateway    LLMClient       // LLM 网关
 	toolRegistry  ToolCaller      // 工具注册表
 	memory        MemoryStore     // 记忆存储
 	maxIterations int             // 最大迭代次数
 	systemPrompt  string          // 系统提示词
-	state         State           // 当前状态
 	ctxManager    *ctxmgr.Manager // 上下文管理器
 }
 
@@ -107,7 +107,6 @@ func NewEngine(cfg EngineConfig) *Engine {
 		memory:        cfg.Memory,
 		maxIterations: maxIter,
 		systemPrompt:  systemPrompt,
-		state:         StateIdle,
 		ctxManager:    cfg.CtxManager,
 	}
 }

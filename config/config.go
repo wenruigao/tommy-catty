@@ -27,6 +27,69 @@ type Config struct {
 
 	// 工作目录（文件操作沙箱范围）
 	WorkDir string `yaml:"work_dir"`
+
+	// HTTP 服务配置（多用户模式）
+	Server ServerConfig `yaml:"server"`
+
+	// 会话管理配置
+	Session SessionConfig `yaml:"session"`
+
+	// Databases 数据库只读查询数据源配置（key 为数据源名称）
+	Databases map[string]DatabaseEntry `yaml:"databases"`
+
+	// KnowledgeBases 本地知识库配置
+	KnowledgeBases []KnowledgeBaseEntry `yaml:"knowledge_bases"`
+}
+
+// DatabaseEntry 单个数据库数据源的 YAML 配置（对应 db_query 工具）。
+type DatabaseEntry struct {
+	// Driver 驱动类型：mysql | postgres | sqlite
+	Driver string `yaml:"driver"`
+	// DSN 数据源连接串，支持 ${ENV_VAR} 引用
+	DSN string `yaml:"dsn"`
+
+	// MaxOpenConns 连接池最大打开连接数（默认 5）
+	MaxOpenConns int `yaml:"max_open_conns"`
+	// MaxIdleConns 连接池最大空闲连接数（默认 2）
+	MaxIdleConns int `yaml:"max_idle_conns"`
+	// ConnMaxLifetime 连接最大存活时间（如 "30m"）
+	ConnMaxLifetime string `yaml:"conn_max_lifetime"`
+	// QueryTimeout 单条查询超时（如 "30s"）
+	QueryTimeout string `yaml:"query_timeout"`
+
+	// MaxRows 结果集行数硬上限（默认 500）
+	MaxRows int `yaml:"max_rows"`
+	// AllowUnion 是否允许 UNION 查询（默认 false）
+	AllowUnion bool `yaml:"allow_union"`
+	// AllowSubquery 是否允许子查询（默认 true）
+	AllowSubquery *bool `yaml:"allow_subquery"`
+
+	// AllowedTables 表名白名单（支持 * 通配符）
+	AllowedTables []string `yaml:"allowed_tables"`
+	// DeniedColumns 列黑名单（格式 table.column 或 *.column）
+	DeniedColumns []string `yaml:"denied_columns"`
+}
+
+// KnowledgeBaseEntry 单个本地知识库的 YAML 配置（对应 kb_* 工具）。
+type KnowledgeBaseEntry struct {
+	// Name 知识库名称
+	Name string `yaml:"name"`
+	// Paths 待索引的目录/文件列表
+	Paths []string `yaml:"paths"`
+	// Exclude 排除的 glob 模式
+	Exclude []string `yaml:"exclude"`
+	// Extensions 允许的文件扩展名（含点，如 .md）
+	Extensions []string `yaml:"extensions"`
+	// Strategy 分块策略：auto | heading | paragraph
+	Strategy string `yaml:"strategy"`
+	// MaxTokens 每块最大 token 数（默认 500）
+	MaxTokens int `yaml:"max_tokens"`
+	// Overlap 滑动窗口重叠 token 数
+	Overlap int `yaml:"overlap"`
+	// MaxFileMB 单文件大小上限（MB，默认 5）
+	MaxFileMB int `yaml:"max_file_mb"`
+	// TopK 默认检索返回数（默认 5）
+	TopK int `yaml:"top_k"`
 }
 
 // LLMConfig LLM 网关配置
@@ -114,6 +177,36 @@ type EngineConfig struct {
 
 	// 系统提示词
 	SystemPrompt string `yaml:"system_prompt"`
+}
+
+// ServerConfig HTTP 服务配置（多用户模式）
+type ServerConfig struct {
+	// Mode 运行模式："cli"（默认，单用户 REPL）或 "http"（多用户 HTTP 服务）
+	Mode string `yaml:"mode"`
+
+	// Addr HTTP 监听地址（mode 为 http 时生效）
+	Addr string `yaml:"addr"`
+
+	// AuthMode 认证方式："header"（信任 X-User-ID）| "jwt" | "oauth2"
+	AuthMode string `yaml:"auth_mode"`
+}
+
+// SessionConfig 会话管理配置
+type SessionConfig struct {
+	// MaxSessions 最大活跃会话数（默认 1000）
+	MaxSessions int `yaml:"max_sessions"`
+
+	// TTL 空闲超时（如 "30m"，默认 30 分钟）
+	TTL string `yaml:"ttl"`
+
+	// MemorySize 每用户工作记忆容量（默认 100）
+	MemorySize int `yaml:"memory_size"`
+
+	// CleanupInterval 过期扫描间隔（如 "5m"，默认 5 分钟）
+	CleanupInterval string `yaml:"cleanup_interval"`
+
+	// RequestsPerMinute 每用户每分钟最大请求数（0 表示不限流）
+	RequestsPerMinute int `yaml:"requests_per_minute"`
 }
 
 // Load 从 YAML 文件加载配置
@@ -214,6 +307,27 @@ func (c *Config) applyDefaults() {
 	if c.WorkDir == "" {
 		c.WorkDir = "."
 	}
+	if c.Server.Mode == "" {
+		c.Server.Mode = "cli"
+	}
+	if c.Server.Addr == "" {
+		c.Server.Addr = ":8080"
+	}
+	if c.Server.AuthMode == "" {
+		c.Server.AuthMode = "header"
+	}
+	if c.Session.MaxSessions == 0 {
+		c.Session.MaxSessions = 1000
+	}
+	if c.Session.TTL == "" {
+		c.Session.TTL = "30m"
+	}
+	if c.Session.MemorySize == 0 {
+		c.Session.MemorySize = 100
+	}
+	if c.Session.CleanupInterval == "" {
+		c.Session.CleanupInterval = "5m"
+	}
 }
 
 // resolveEnvVars 解析配置中的 ${ENV_VAR} 引用
@@ -222,6 +336,10 @@ func (c *Config) resolveEnvVars() {
 		entry.APIKey = resolveEnvVar(entry.APIKey)
 		entry.BaseURL = resolveEnvVar(entry.BaseURL)
 		c.LLM.Providers[name] = entry
+	}
+	for name, db := range c.Databases {
+		db.DSN = resolveEnvVar(db.DSN)
+		c.Databases[name] = db
 	}
 }
 
@@ -253,4 +371,20 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// SessionTTLDuration 解析会话空闲超时配置，解析失败时返回 30 分钟。
+func (c *Config) SessionTTLDuration() time.Duration {
+	if d, err := time.ParseDuration(c.Session.TTL); err == nil {
+		return d
+	}
+	return 30 * time.Minute
+}
+
+// SessionCleanupDuration 解析过期扫描间隔配置，解析失败时返回 5 分钟。
+func (c *Config) SessionCleanupDuration() time.Duration {
+	if d, err := time.ParseDuration(c.Session.CleanupInterval); err == nil {
+		return d
+	}
+	return 5 * time.Minute
 }

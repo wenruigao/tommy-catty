@@ -92,10 +92,10 @@ type Summarizer interface {
 
 // Manager 上下文管理器，负责 token 预算控制和渐进式压缩
 type Manager struct {
-	cfg       Config
-	estimator *TokenEstimator
+	cfg        Config
+	estimator  *TokenEstimator
 	summarizer Summarizer
-	mu        sync.Mutex
+	mu         sync.Mutex
 
 	// conversationSummary 历史对话的累积摘要（压缩产物）
 	conversationSummary string
@@ -121,8 +121,8 @@ func NewManager(cfg Config, summarizer Summarizer) *Manager {
 	}
 
 	return &Manager{
-		cfg:       cfg,
-		estimator: DefaultEstimator(),
+		cfg:        cfg,
+		estimator:  DefaultEstimator(),
 		summarizer: summarizer,
 	}
 }

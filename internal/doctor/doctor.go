@@ -56,13 +56,13 @@ type Check struct {
 
 // Report 完整诊断报告
 type Report struct {
-	Results    []CheckResult `json:"results"`
-	StartTime  time.Time     `json:"start_time"`
-	EndTime    time.Time     `json:"end_time"`
-	TotalOK    int           `json:"total_ok"`
-	TotalWarn  int           `json:"total_warn"`
-	TotalError int           `json:"total_error"`
-	FixesApplied int         `json:"fixes_applied"`
+	Results      []CheckResult `json:"results"`
+	StartTime    time.Time     `json:"start_time"`
+	EndTime      time.Time     `json:"end_time"`
+	TotalOK      int           `json:"total_ok"`
+	TotalWarn    int           `json:"total_warn"`
+	TotalError   int           `json:"total_error"`
+	FixesApplied int           `json:"fixes_applied"`
 }
 
 // Doctor 健康自检引擎

@@ -31,11 +31,11 @@ const (
 
 // APIError 携带 HTTP 状态码的结构化错误
 type APIError struct {
-	StatusCode  int           // HTTP 状态码
-	Message     string        // 错误描述
-	RetryAfter  time.Duration // 服务端建议的等待时间（429 时有效）
-	Provider    string        // 供应商名称
-	Retryable   bool          // 是否可重试
+	StatusCode int           // HTTP 状态码
+	Message    string        // 错误描述
+	RetryAfter time.Duration // 服务端建议的等待时间（429 时有效）
+	Provider   string        // 供应商名称
+	Retryable  bool          // 是否可重试
 }
 
 func (e *APIError) Error() string {
@@ -236,12 +236,12 @@ func DefaultCircuitBreakerConfig() CircuitBreakerConfig {
 
 // CircuitBreaker 熔断器实现
 type CircuitBreaker struct {
-	mu             sync.Mutex
-	config         CircuitBreakerConfig
-	state          CircuitState
-	failures       int       // 连续失败计数
-	successes      int       // 半开状态连续成功计数
-	lastFailure    time.Time // 最后一次失败时间
+	mu              sync.Mutex
+	config          CircuitBreakerConfig
+	state           CircuitState
+	failures        int       // 连续失败计数
+	successes       int       // 半开状态连续成功计数
+	lastFailure     time.Time // 最后一次失败时间
 	lastStateChange time.Time
 }
 
@@ -332,14 +332,14 @@ func (cb *CircuitBreaker) setState(s CircuitState) {
 
 // RetryEvent 重试事件（用于日志和监控）
 type RetryEvent struct {
-	Provider    string        // 供应商名称
-	Attempt     int           // 第几次尝试（从 1 开始）
-	MaxRetries  int           // 最大重试次数
-	Error       error         // 本次错误
-	Category    ErrorCategory // 错误类别
-	Backoff     time.Duration // 本次退避时间
-	CircuitState CircuitState // 熔断器状态
-	Timestamp   time.Time
+	Provider     string        // 供应商名称
+	Attempt      int           // 第几次尝试（从 1 开始）
+	MaxRetries   int           // 最大重试次数
+	Error        error         // 本次错误
+	Category     ErrorCategory // 错误类别
+	Backoff      time.Duration // 本次退避时间
+	CircuitState CircuitState  // 熔断器状态
+	Timestamp    time.Time
 }
 
 // RetryHook 重试事件回调函数

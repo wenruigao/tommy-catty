@@ -50,18 +50,18 @@ type Usage struct {
 
 // ChatResponse 表示聊天补全的完整响应
 type ChatResponse struct {
-	Content      string     `json:"content"`                 // 模型生成的文本内容
-	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`    // 工具调用列表
-	Model        string     `json:"model"`                   // 实际使用的模型
-	Usage        Usage      `json:"usage"`                   // token 用量
-	FinishReason string     `json:"finish_reason"`           // 结束原因: stop, tool_calls, length
+	Content      string     `json:"content"`              // 模型生成的文本内容
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"` // 工具调用列表
+	Model        string     `json:"model"`                // 实际使用的模型
+	Usage        Usage      `json:"usage"`                // token 用量
+	FinishReason string     `json:"finish_reason"`        // 结束原因: stop, tool_calls, length
 }
 
 // StreamChunk 表示流式输出中的一个数据块
 type StreamChunk struct {
-	Delta         string    `json:"delta"`                    // 增量文本内容
+	Delta         string    `json:"delta"`                     // 增量文本内容
 	ToolCallDelta *ToolCall `json:"tool_call_delta,omitempty"` // 增量工具调用信息
-	Done          bool      `json:"done"`                     // 是否为最后一个块
+	Done          bool      `json:"done"`                      // 是否为最后一个块
 }
 
 // LLMProvider 定义大语言模型供应商的统一接口
