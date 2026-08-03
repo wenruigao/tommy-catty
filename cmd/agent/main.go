@@ -18,6 +18,7 @@ import (
 	"github.com/tommy-cat/agent/internal/doctor"
 	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/tommy-cat/agent/internal/search"
 	"github.com/tommy-cat/agent/internal/security"
 	"github.com/tommy-cat/agent/internal/session"
 	"github.com/tommy-cat/agent/internal/skill"
@@ -49,6 +50,11 @@ func main() {
 	registry := tool.NewRegistry()
 	tool.RegisterBuiltinTools(registry)
 
+	// 初始化搜索工具
+	searchMgr := search.NewManager(cfg.Search)
+	tool.RegisterSearchTool(registry, &searchAdapter{mgr: searchMgr})
+	fmt.Printf("  🔍 搜索引擎: %s\n", strings.Join(searchMgr.ListProviders(), ", "))
+
 	// 构建数据源连接池与知识库，并注册 db_query / kb_* 工具
 	dataTools := bootstrap.RegisterDataTools(cfg, registry)
 	defer dataTools.Close()
@@ -59,8 +65,21 @@ func main() {
 		fmt.Printf("  ⚠️  %s\n", w)
 	}
 
+	// 连接 MCP Server 并注册远程工具（配置为空时跳过）
+	mcpTools := bootstrap.RegisterMCPTools(context.Background(), cfg, registry)
+	defer mcpTools.Close()
+	if mcpTools.ServerCount > 0 {
+		fmt.Printf("  🔗 已连接 %d 个 MCP Server，注册 %d 个远程工具\n", mcpTools.ServerCount, mcpTools.ToolCount)
+	}
+	for _, w := range mcpTools.Warnings {
+		fmt.Printf("  ⚠️  %s\n", w)
+	}
+
 	// 初始化安全策略引擎
 	secEngine := initSecurityEngine(cfg)
+
+	// 工具调用安全门禁（策略评估 + 终端交互式审批）
+	toolGate := session.NewToolGateAdapter(secEngine, interactiveApprover)
 
 	// 初始化 Skill 系统
 	skillStore := skill.NewStore(cfg.SkillStorePath)
@@ -70,13 +89,23 @@ func main() {
 	// 初始化追踪器（CLI 模式全局）
 	tracer := trace.NewTracer()
 
-	// 构建共享依赖
-	defaultModel := ""
-	if entry, ok := cfg.LLM.Providers[cfg.LLM.DefaultProvider]; ok {
-		defaultModel = entry.Model
+	// 追踪 JSONL 导出（配置为空则禁用）
+	var traceExporter *trace.Exporter
+	if cfg.Engine.TraceExportPath != "" {
+		exp, err := trace.NewExporter(cfg.Engine.TraceExportPath)
+		if err != nil {
+			fmt.Printf("  ⚠️  %v（禁用追踪导出）\n", err)
+		} else {
+			traceExporter = exp
+			defer traceExporter.Close()
+			fmt.Printf("  📈 追踪导出: %s\n", cfg.Engine.TraceExportPath)
+		}
 	}
 
-	llmAdapter := &llmClientAdapter{gateway: gateway, model: defaultModel}
+	llmAdapter := &llmClientAdapter{gateway: gateway}
+
+	// 初始化摘要生成器（用于上下文压缩）
+	summarizer := ctxmgr.NewLLMSummarizer(llmAdapter.Chat)
 
 	// 初始化 SessionManager（统一管理用户会话）
 	deps := session.SessionDeps{
@@ -86,7 +115,10 @@ func main() {
 		SystemPrompt:  buildSystemPrompt(cfg),
 		MemorySize:    cfg.Session.MemorySize,
 		CtxConfig:     ctxmgr.DefaultConfig(),
-		Summarizer:    nil,
+		Summarizer:    summarizer,
+		Reflection:    cfg.Engine.Reflection.ToReflectionConfig(),
+		ToolGate:      toolGate,
+		TraceExporter: traceExporter,
 		RateLimit: session.RateLimitConfig{
 			RequestsPerMinute: cfg.Session.RequestsPerMinute,
 		},
@@ -285,6 +317,24 @@ func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher
 	}
 }
 
+// interactiveApprover 交互式审批回调：在终端打印工具名/参数摘要/原因，
+// 提示用户输入 y/n 决定是否放行。审批时新建 reader 读取 stdin，
+// 避免与主输入循环的 bufio.Scanner 产生缓冲冲突。
+func interactiveApprover(_ context.Context, toolName, argsSummary, reason string) bool {
+	fmt.Printf("  ⚠️  工具调用需要审批\n")
+	fmt.Printf("      工具: %s\n", toolName)
+	fmt.Printf("      参数: %s\n", argsSummary)
+	fmt.Printf("      原因: %s\n", reason)
+	fmt.Print("  是否允许执行？(y/N): ")
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	approved := strings.EqualFold(strings.TrimSpace(answer), "y")
+	if !approved {
+		fmt.Println("  已拒绝本次工具调用。")
+	}
+	return approved
+}
+
 // checkDecisions 检查安全策略决策，返回是否被阻止
 func checkDecisions(decisions []security.Decision) bool {
 	for _, d := range decisions {
@@ -365,14 +415,33 @@ func buildDoctorConfig(cfg *config.Config) doctor.DoctorConfig {
 // llmClientAdapter 将 llm.Gateway 适配为 engine.LLMClient 接口
 type llmClientAdapter struct {
 	gateway *llm.Gateway
-	model   string
 }
 
 func (a *llmClientAdapter) Chat(ctx context.Context, messages []llm.Message, tools []llm.ToolDef) (llm.ChatResponse, error) {
 	req := llm.ChatRequest{
-		Model:    a.model,
 		Messages: messages,
 		Tools:    tools,
 	}
 	return a.gateway.Chat(ctx, req)
+}
+
+// searchAdapter 将 search.Manager 适配为 tool.Searcher 接口
+type searchAdapter struct {
+	mgr *search.Manager
+}
+
+func (a *searchAdapter) Search(ctx context.Context, query string, maxResults int) ([]tool.SearchResult, error) {
+	results, err := a.mgr.Search(ctx, query, maxResults)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tool.SearchResult, len(results))
+	for i, r := range results {
+		out[i] = tool.SearchResult{
+			Title:   r.Title,
+			URL:     r.URL,
+			Snippet: r.Snippet,
+		}
+	}
+	return out, nil
 }

@@ -5,16 +5,19 @@ package security
 // 包含 8 条常用安全策略，覆盖破坏性操作拦截、敏感信息保护、成本控制等场景
 func DefaultPolicies() []Policy {
 	return []Policy{
-		// 1. 拦截破坏性操作：禁止执行 rm -rf、DROP TABLE 等危险命令
+		// 1. 拦截破坏性操作：禁止执行 rm -rf、DROP TABLE 等危险命令。
+		// rm 子模式覆盖合并旗标（-rf/-fr/-Rf）、分离旗标（-r -f、-f -r，允许夹杂
+		// 其他旗标）以及长旗标（--recursive --force）等形式，目标可以是 /、/*、~
+		// 或引号包裹的路径；普通的 rm file.txt / rm -f file 不会命中。
 		{
 			ID:          "block-destructive",
 			Name:        "拦截破坏性操作",
-			Description: "禁止执行包含 rm -rf、DROP TABLE 等破坏性命令的操作",
+			Description: "禁止执行包含 rm -rf（含 -fr、-r -f、--recursive --force 等变体）、DROP TABLE 等破坏性命令的操作",
 			Priority:    1,
 			Enabled:     true,
 			When: PolicyCondition{
 				ToolNames: []string{"shell_exec", "code_run"},
-				Pattern:   `(?i)(rm\s+-rf|DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE\s+TABLE|mkfs|dd\s+if=)`,
+				Pattern:   `(?i)(\brm\s+((-[a-z]+\s+)*-[a-z]*[rf][a-z]*[rf][a-z]*\b|(-[a-z]+\s+)*-[a-z]*r[a-z]*(\s+-[a-z]+)*\s+-[a-z]*f[a-z]*\b|(-[a-z]+\s+)*-[a-z]*f[a-z]*(\s+-[a-z]+)*\s+-[a-z]*r[a-z]*\b|--(recursive|force)[a-z]*(\s+--?[a-z]+)*\s+--(recursive|force)[a-z]*)|DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE\s+TABLE|mkfs|dd\s+if=)`,
 			},
 			Then: PolicyAction{
 				Effect:         EffectDeny,

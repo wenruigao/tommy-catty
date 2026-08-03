@@ -9,9 +9,9 @@
 
 llm:
   # 默认供应商（未指定 model 时使用）
-  default_provider: "deepseek"
+  default_provider: "mimo"
   # 降级供应商（主供应商失败时自动切换）
-  fallback_provider: "qwen"
+  fallback_provider: "deepseek"
 
   # ── 重试策略 ──
   retry:
@@ -31,6 +31,13 @@ llm:
 
   # 模型供应商列表 — 按需增删，无需改代码
   providers:
+    mimo:
+      base_url: "https://token-plan-cn.xiaomimimo.com/v1/chat/completions"
+      api_key: "${MIMO_API_KEY}"
+      model: "mimo-v2.5-pro"
+      max_tokens: 32768
+      timeout: "120s"
+
     deepseek:
       base_url: "https://api.deepseek.com/chat/completions"
       api_key: "${DEEPSEEK_API_KEY}"
@@ -84,6 +91,34 @@ llm:
 engine:
   max_iterations: 20
   system_prompt: ""
+  # trace_export_path: "data/traces.jsonl"  # 追踪 span 的 JSONL 导出路径（默认空=禁用）
+
+  # ── 自我反思与重规划（默认禁用）──
+  # 启用后，Agent 会定期让 LLM 自评执行质量，不满意时调整或重新规划。
+  reflection:
+    enabled: false               # 是否启用反思（默认 false）
+    interval_steps: 5            # 每隔多少步执行一次阶段性反思
+    satisfaction_threshold: 0.6  # 满意度低于此分数触发调整
+    max_replans: 2               # 最大重规划次数
+    deviation_threshold: 1.5     # 累积偏差超过此值触发重规划
+
+# ────────────────────────────────────────────────────────────
+# HTTP 服务配置（多用户模式，cmd/server 入口）
+# ────────────────────────────────────────────────────────────
+# server:
+#   mode: "http"
+#   addr: ":8080"
+#   auth_mode: "header"                  # header（内网，信任 X-User-ID）| api_key | jwt
+#   auth_api_key: "${AGENT_API_KEY}"     # auth_mode=api_key 时必填，请求需携带 X-API-Key
+#   auth_jwt_secret: "${AGENT_JWT_SECRET}" # auth_mode=jwt 时必填（HS256 签名密钥）
+
+# ────────────────────────────────────────────────────────────
+# 搜索引擎配置（web_search 工具）
+# ────────────────────────────────────────────────────────────
+search:
+  default_engine: "duckduckgo"   # duckduckgo（免费）| tavily（需 API Key，效果更好）
+  # tavily_api_key: "${TAVILY_API_KEY}"  # Tavily API Key（可选）
+  max_results: 5                 # 默认返回结果数
 
 policy_file: "config/policy.yaml"
 skill_store_path: "data/skills.json"
@@ -137,3 +172,27 @@ work_dir: "."
 #     overlap: 100                    # 滑动窗口重叠
 #     max_file_mb: 5                  # 单文件大小上限
 #     top_k: 5                        # 默认检索返回数
+
+# ────────────────────────────────────────────────────────────
+# MCP Server 接入（Model Context Protocol 远程工具）
+# ────────────────────────────────────────────────────────────
+# 启动时连接下列 MCP Server，发现其工具并注册到工具注册表。
+# 单个 server 连接失败只记警告，不中断启动；servers 为空时跳过。
+#
+# mcp:
+#   servers:
+#     # stdio 传输：启动本地子进程
+#     - name: "filesystem"
+#       transport: "stdio"            # stdio | sse
+#       command: "npx"
+#       args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+#       risk_level: 1                 # 工具风险等级 0~3（默认 1）
+#       timeout_seconds: 30           # 请求超时（秒，默认 30）
+#
+#     # sse 传输：连接远程 HTTP 端点
+#     - name: "remote"
+#       transport: "sse"
+#       url: "http://localhost:3001/sse"
+#       # headers:
+#       #   Authorization: "Bearer ${MCP_REMOTE_TOKEN}"
+#       # tool_prefix: "remote_"      # 工具名前缀（默认 "<name>_"）

@@ -1,7 +1,10 @@
 // Package security 提供安全策略引擎，用于在 Agent 执行过程中进行安全检查和访问控制。
 package security
 
-import "time"
+import (
+	"regexp"
+	"time"
+)
 
 // Effect 表示策略执行的效果类型
 type Effect string
@@ -37,6 +40,20 @@ type PolicyCondition struct {
 	TimeRange string `yaml:"time_range" json:"time_range"`
 	// MaxCost 最大允许成本阈值
 	MaxCost float64 `yaml:"max_cost" json:"max_cost"`
+
+	// compiledPattern 预编译的正则（非序列化，由 compilePattern 填充）
+	compiledPattern *regexp.Regexp `yaml:"-" json:"-"`
+}
+
+// compilePattern 预编译 Pattern 字段为正则对象。
+// 无效正则会被忽略（compiledPattern 保持 nil）。
+func (c *PolicyCondition) compilePattern() {
+	if c.Pattern == "" {
+		return
+	}
+	if re, err := regexp.Compile(c.Pattern); err == nil {
+		c.compiledPattern = re
+	}
 }
 
 // PolicyAction 定义策略匹配后执行的动作

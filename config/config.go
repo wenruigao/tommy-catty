@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/tommy-cat/agent/internal/search"
 	"gopkg.in/yaml.v3"
 )
 
@@ -39,6 +41,12 @@ type Config struct {
 
 	// KnowledgeBases 本地知识库配置
 	KnowledgeBases []KnowledgeBaseEntry `yaml:"knowledge_bases"`
+
+	// Search 搜索功能配置
+	Search search.SearchConfig `yaml:"search"`
+
+	// MCP MCP Server 接入配置
+	MCP MCPConfig `yaml:"mcp"`
 }
 
 // DatabaseEntry 单个数据库数据源的 YAML 配置（对应 db_query 工具）。
@@ -104,50 +112,16 @@ type LLMConfig struct {
 	// FallbackProvider 降级供应商名称
 	FallbackProvider string `yaml:"fallback_provider"`
 
-	// Retry 重试策略配置
-	Retry *RetryEntry `yaml:"retry"`
+	// Retry 重试策略配置（直接使用 llm 包的类型）
+	Retry *llm.RetryConfig `yaml:"retry"`
 
-	// CircuitBreaker 熔断器配置
-	CircuitBreaker *CircuitBreakerEntry `yaml:"circuit_breaker"`
-}
-
-// RetryEntry 重试策略 YAML 配置
-type RetryEntry struct {
-	// MaxRetries 最大重试次数（不含首次调用，默认 3）
-	MaxRetries int `yaml:"max_retries"`
-
-	// BaseBackoffMs 基础退避时间（毫秒，默认 500）
-	BaseBackoffMs int `yaml:"base_backoff_ms"`
-
-	// MaxBackoffMs 最大退避时间上限（毫秒，默认 30000）
-	MaxBackoffMs int `yaml:"max_backoff_ms"`
-
-	// BackoffMultiplier 退避倍数（默认 2.0）
-	BackoffMultiplier float64 `yaml:"backoff_multiplier"`
-
-	// JitterFactor 抖动因子 0.0~1.0（默认 0.2）
-	JitterFactor float64 `yaml:"jitter_factor"`
-
-	// RetryOnUnknown 未知错误是否重试（默认 true）
-	RetryOnUnknown bool `yaml:"retry_on_unknown"`
-
-	// MaxTotalTimeoutS 所有重试的总时间上限（秒，默认 120）
-	MaxTotalTimeoutS int `yaml:"max_total_timeout_s"`
-}
-
-// CircuitBreakerEntry 熔断器 YAML 配置
-type CircuitBreakerEntry struct {
-	// FailureThreshold 连续失败多少次后触发熔断（默认 5）
-	FailureThreshold int `yaml:"failure_threshold"`
-
-	// SuccessThreshold 半开状态下连续成功多少次后恢复（默认 2）
-	SuccessThreshold int `yaml:"success_threshold"`
-
-	// OpenTimeoutS 熔断后多久进入半开状态（秒，默认 60）
-	OpenTimeoutS int `yaml:"open_timeout_s"`
+	// CircuitBreaker 熔断器配置（直接使用 llm 包的类型）
+	CircuitBreaker *llm.CircuitBreakerYAMLConfig `yaml:"circuit_breaker"`
 }
 
 // ProviderEntry 单个模型供应商的配置条目
+// 保留此类型是因为 Timeout 字段使用 YAML 友好的 string（如 "120s"），
+// 而 llm.ProviderConfig 使用 time.Duration，需要转换。
 type ProviderEntry struct {
 	// BaseURL API 端点（OpenAI 兼容的 chat/completions 地址）
 	BaseURL string `yaml:"base_url"`
@@ -177,6 +151,49 @@ type EngineConfig struct {
 
 	// 系统提示词
 	SystemPrompt string `yaml:"system_prompt"`
+
+	// Reflection 自我反思与重规划配置（默认禁用）
+	Reflection ReflectionEntry `yaml:"reflection"`
+
+	// TraceExportPath 追踪 span 的 JSONL 导出路径（空则禁用导出）
+	TraceExportPath string `yaml:"trace_export_path"`
+}
+
+// ReflectionEntry 引擎自我反思机制的 YAML 配置（对应 engine.ReflectionConfig）。
+type ReflectionEntry struct {
+	// Enabled 是否启用反思（默认 false）
+	Enabled bool `yaml:"enabled"`
+	// IntervalSteps 每隔多少步执行一次阶段性反思（默认 5）
+	IntervalSteps int `yaml:"interval_steps"`
+	// SatisfactionThreshold 满意度低于此分数触发调整（默认 0.6）
+	SatisfactionThreshold float64 `yaml:"satisfaction_threshold"`
+	// MaxReplans 最大重规划次数（默认 2）
+	MaxReplans int `yaml:"max_replans"`
+	// DeviationThreshold 累积偏差超过此值触发重规划（默认 1.5）
+	DeviationThreshold float64 `yaml:"deviation_threshold"`
+}
+
+// ToReflectionConfig 转换为 engine.ReflectionConfig；未启用时返回 nil（禁用反思）。
+// 未显式设置的数值字段沿用 engine 包默认值。
+func (e ReflectionEntry) ToReflectionConfig() *engine.ReflectionConfig {
+	if !e.Enabled {
+		return nil
+	}
+	cfg := engine.DefaultReflectionConfig()
+	cfg.Enabled = true
+	if e.IntervalSteps > 0 {
+		cfg.IntervalSteps = e.IntervalSteps
+	}
+	if e.SatisfactionThreshold > 0 {
+		cfg.SatisfactionThreshold = e.SatisfactionThreshold
+	}
+	if e.MaxReplans > 0 {
+		cfg.MaxReplans = e.MaxReplans
+	}
+	if e.DeviationThreshold > 0 {
+		cfg.DeviationThreshold = e.DeviationThreshold
+	}
+	return &cfg
 }
 
 // ServerConfig HTTP 服务配置（多用户模式）
@@ -187,8 +204,45 @@ type ServerConfig struct {
 	// Addr HTTP 监听地址（mode 为 http 时生效）
 	Addr string `yaml:"addr"`
 
-	// AuthMode 认证方式："header"（信任 X-User-ID）| "jwt" | "oauth2"
+	// AuthMode 认证方式："header"（信任 X-User-ID）| "jwt" | "api_key"
 	AuthMode string `yaml:"auth_mode"`
+
+	// AuthAPIKey 共享密钥（auth_mode 为 api_key 时必填），支持 ${ENV_VAR} 引用
+	AuthAPIKey string `yaml:"auth_api_key"`
+
+	// AuthJWTSecret JWT HS256 签名密钥（auth_mode 为 jwt 时必填），支持 ${ENV_VAR} 引用
+	AuthJWTSecret string `yaml:"auth_jwt_secret"`
+}
+
+// MCPConfig MCP Server 接入配置。
+type MCPConfig struct {
+	// Servers MCP Server 列表（为空则跳过 MCP 装配）
+	Servers []MCPServerEntry `yaml:"servers"`
+}
+
+// MCPServerEntry 单个 MCP Server 的 YAML 配置（对应 mcp.ClientConfig）。
+type MCPServerEntry struct {
+	// Name 服务器标识名称（用于日志和默认工具名前缀）
+	Name string `yaml:"name"`
+	// Transport 传输方式：stdio | sse
+	Transport string `yaml:"transport"`
+
+	// stdio 传输配置
+	Command string   `yaml:"command"`
+	Args    []string `yaml:"args"`
+	Env     []string `yaml:"env"`
+	WorkDir string   `yaml:"work_dir"`
+
+	// sse 传输配置
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
+
+	// ToolPrefix 工具名前缀（为空时使用 "<name>_"）
+	ToolPrefix string `yaml:"tool_prefix"`
+	// RiskLevel 工具风险等级（0~3，默认 1）
+	RiskLevel int `yaml:"risk_level"`
+	// TimeoutSeconds 请求超时（秒，默认 30）
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // SessionConfig 会话管理配置
@@ -252,35 +306,13 @@ func (c *Config) ToGatewayConfig() llm.GatewayConfig {
 		}
 	}
 
-	gwCfg := llm.GatewayConfig{
+	return llm.GatewayConfig{
 		Providers:        providers,
 		DefaultProvider:  c.LLM.DefaultProvider,
 		FallbackProvider: c.LLM.FallbackProvider,
+		Retry:            c.LLM.Retry,
+		CircuitBreaker:   c.LLM.CircuitBreaker,
 	}
-
-	// 映射重试配置
-	if c.LLM.Retry != nil {
-		gwCfg.Retry = &llm.RetryConfig{
-			MaxRetries:        c.LLM.Retry.MaxRetries,
-			BaseBackoffMs:     c.LLM.Retry.BaseBackoffMs,
-			MaxBackoffMs:      c.LLM.Retry.MaxBackoffMs,
-			BackoffMultiplier: c.LLM.Retry.BackoffMultiplier,
-			JitterFactor:      c.LLM.Retry.JitterFactor,
-			RetryOnUnknown:    c.LLM.Retry.RetryOnUnknown,
-			MaxTotalTimeoutS:  c.LLM.Retry.MaxTotalTimeoutS,
-		}
-	}
-
-	// 映射熔断器配置
-	if c.LLM.CircuitBreaker != nil {
-		gwCfg.CircuitBreaker = &llm.CircuitBreakerYAMLConfig{
-			FailureThreshold: c.LLM.CircuitBreaker.FailureThreshold,
-			SuccessThreshold: c.LLM.CircuitBreaker.SuccessThreshold,
-			OpenTimeoutS:     c.LLM.CircuitBreaker.OpenTimeoutS,
-		}
-	}
-
-	return gwCfg
 }
 
 // applyDefaults 填充默认值
@@ -328,6 +360,12 @@ func (c *Config) applyDefaults() {
 	if c.Session.CleanupInterval == "" {
 		c.Session.CleanupInterval = "5m"
 	}
+	if c.Search.DefaultEngine == "" {
+		c.Search.DefaultEngine = "duckduckgo"
+	}
+	if c.Search.MaxResults == 0 {
+		c.Search.MaxResults = 5
+	}
 }
 
 // resolveEnvVars 解析配置中的 ${ENV_VAR} 引用
@@ -341,6 +379,9 @@ func (c *Config) resolveEnvVars() {
 		db.DSN = resolveEnvVar(db.DSN)
 		c.Databases[name] = db
 	}
+	c.Search.TavilyAPIKey = resolveEnvVar(c.Search.TavilyAPIKey)
+	c.Server.AuthAPIKey = resolveEnvVar(c.Server.AuthAPIKey)
+	c.Server.AuthJWTSecret = resolveEnvVar(c.Server.AuthJWTSecret)
 }
 
 // resolveEnvVar 将 "${VAR_NAME}" 格式替换为对应环境变量的值

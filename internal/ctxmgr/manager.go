@@ -2,6 +2,7 @@ package ctxmgr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -80,8 +81,10 @@ func DefaultConfig() Config {
 
 // LLMMessage 消息结构（与 llm.Message 兼容）
 type LLMMessage struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	ToolCallID string // 工具结果对应的调用 ID
+	ToolCalls  string // 序列化的工具调用 JSON（避免循环依赖）
 }
 
 // Summarizer 摘要生成接口（由外部注入 LLM 实现）
@@ -231,9 +234,28 @@ func (m *Manager) summarizeOldMessages(ctx context.Context, messages []LLMMessag
 		return messages
 	}
 
-	// 分割：旧消息 | 最近消息
-	oldMessages := messages[:len(messages)-keepRecent]
-	recentMessages := messages[len(messages)-keepRecent:]
+	// 分割：旧消息 | 最近消息。
+	// 分割点必须落在原子分组边界上：带 ToolCalls 的 assistant 消息与其 tool 结果
+	// 消息要么整组进入摘要、要么整组保留，绝不拆散（否则会产生协议非法的孤儿消息）。
+	groups := groupMessages(messages)
+	splitGroup := len(groups)
+	keepCount := 0
+	for splitGroup > 0 && keepCount < keepRecent {
+		splitGroup--
+		keepCount += len(groups[splitGroup])
+	}
+	if splitGroup == 0 {
+		// 所有消息都属于保留范围（最近一个分组过大），不做摘要
+		return messages
+	}
+
+	var oldMessages, recentMessages []LLMMessage
+	for _, g := range groups[:splitGroup] {
+		oldMessages = append(oldMessages, g...)
+	}
+	for _, g := range groups[splitGroup:] {
+		recentMessages = append(recentMessages, g...)
+	}
 
 	// 构建需要摘要的文本
 	var sb strings.Builder
@@ -301,27 +323,89 @@ func (m *Manager) fallbackSummarize(text string) string {
 	return summarized
 }
 
-// evictOldest 强制驱逐最旧的消息直到满足预算
+// evictOldest 强制驱逐最旧的消息直到满足预算。
+// 驱逐以原子分组为单位：带 ToolCalls 的 assistant 消息与其 tool 结果消息整组驱逐，
+// 不会只驱逐其中一部分而产生孤儿 tool 消息。
 func (m *Manager) evictOldest(messages []LLMMessage, budget int) []LLMMessage {
 	for len(messages) > m.cfg.KeepRecentMessages {
 		currentTokens := m.estimator.EstimateMessages(toEstMessages(messages))
 		if currentTokens <= budget {
 			break
 		}
-		// 移除第一条非摘要消息
-		if len(messages) > 0 && messages[0].Role == "system" &&
-			strings.HasPrefix(messages[0].Content, "[对话历史摘要]") {
-			// 摘要消息不驱逐，驱逐第二条
-			if len(messages) > 1 {
-				messages = append(messages[:1], messages[2:]...)
+		groups := groupMessages(messages)
+		// 定位第一个可驱逐的分组（开头的摘要消息不驱逐）
+		evictIdx := 0
+		if isSummaryMessage(groups[0][0]) {
+			if len(groups) > 1 {
+				evictIdx = 1
 			} else {
 				break
 			}
-		} else {
-			messages = messages[1:]
 		}
+		// 计算该分组在消息切片中的起始下标
+		start := 0
+		for k := 0; k < evictIdx; k++ {
+			start += len(groups[k])
+		}
+		// 整组移除
+		messages = append(messages[:start], messages[start+len(groups[evictIdx]):]...)
 	}
 	return messages
+}
+
+// isSummaryMessage 判断是否为压缩产生的摘要消息（摘要不参与驱逐）
+func isSummaryMessage(msg LLMMessage) bool {
+	return msg.Role == "system" && strings.HasPrefix(msg.Content, "[对话历史摘要]")
+}
+
+// toolCallIDs 解析 assistant 消息 ToolCalls JSON 中的调用 id 集合。
+// 第二个返回值表示解析是否成功；失败时调用方应采取保守策略（整组不可拆分）。
+func toolCallIDs(raw string) (map[string]bool, bool) {
+	var calls []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(raw), &calls); err != nil {
+		return nil, false
+	}
+	ids := make(map[string]bool, len(calls))
+	for _, c := range calls {
+		if c.ID != "" {
+			ids[c.ID] = true
+		}
+	}
+	return ids, true
+}
+
+// groupMessages 将消息序列划分为原子分组，压缩/驱逐必须以组为单位进行：
+//   - 带 ToolCalls 的 assistant 消息与其后续连续且 ToolCallID 匹配的 tool 消息构成一组；
+//   - ToolCalls JSON 解析失败时，保守地将后续所有连续 tool 消息都并入该组（不可拆分）；
+//   - 其余消息各自单独成组。
+func groupMessages(messages []LLMMessage) [][]LLMMessage {
+	groups := make([][]LLMMessage, 0, len(messages))
+	i := 0
+	for i < len(messages) {
+		msg := messages[i]
+		if msg.Role == "assistant" && msg.ToolCalls != "" {
+			ids, ok := toolCallIDs(msg.ToolCalls)
+			j := i + 1
+			if ok {
+				for j < len(messages) && messages[j].Role == "tool" && ids[messages[j].ToolCallID] {
+					j++
+				}
+			} else {
+				// 解析失败：保守策略，后续连续 tool 消息全部并入本组
+				for j < len(messages) && messages[j].Role == "tool" {
+					j++
+				}
+			}
+			groups = append(groups, messages[i:j])
+			i = j
+		} else {
+			groups = append(groups, messages[i:i+1])
+			i++
+		}
+	}
+	return groups
 }
 
 // assembleMessages 组装最终消息列表
@@ -359,11 +443,11 @@ func (m *Manager) Reset() {
 	m.totalTokensSaved = 0
 }
 
-// toEstMessages 转换消息格式供估算器使用
+// toEstMessages 转换消息格式供估算器使用（透传 ToolCalls 以计入估算）
 func toEstMessages(msgs []LLMMessage) []Message {
 	result := make([]Message, len(msgs))
 	for i, m := range msgs {
-		result[i] = Message{Role: m.Role, Content: m.Content}
+		result[i] = Message{Role: m.Role, Content: m.Content, ToolCalls: m.ToolCalls}
 	}
 	return result
 }

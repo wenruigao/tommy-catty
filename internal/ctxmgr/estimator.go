@@ -9,11 +9,12 @@ import (
 )
 
 // TokenEstimator 估算文本的 token 数量。
-// 采用混合估算策略：中文字符约 1.5 token/字，英文约 0.25 token/字符（4字符≈1token）。
+// 采用混合估算策略，基于主流 BPE tokenizer（GPT-4/Claude/Qwen/DeepSeek）的实测统计。
 type TokenEstimator struct {
 	// CJKRatio 中日韩字符的 token 比率（每字符消耗的 token 数）
+	// 实测：GPT-4 约 2.0-2.5，Qwen/DeepSeek 约 1.5-2.0，取均值 2.0
 	CJKRatio float64
-	// LatinRatio 拉丁字符的 token 比率
+	// LatinRatio 拉丁字符的 token 比率（英文单词平均约 1.3 token/word，约 4-5 字符/token）
 	LatinRatio float64
 	// OverheadPerMessage 每条消息的固定开销（role 标记、分隔符等）
 	OverheadPerMessage int
@@ -22,7 +23,7 @@ type TokenEstimator struct {
 // DefaultEstimator 返回默认的 token 估算器
 func DefaultEstimator() *TokenEstimator {
 	return &TokenEstimator{
-		CJKRatio:           1.5,
+		CJKRatio:           2.0,
 		LatinRatio:         0.25,
 		OverheadPerMessage: 4,
 	}
@@ -34,21 +35,30 @@ func (e *TokenEstimator) EstimateText(text string) int {
 		return 0
 	}
 
-	var cjkCount, latinCount, otherCount int
+	var cjkCount, latinCount, digitCount, spaceCount, otherCount int
 
 	for _, r := range text {
 		switch {
-		case isCJK(r):
+		case isCJK(r) || isCJKPunct(r):
 			cjkCount++
-		case r < 128:
+		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
 			latinCount++
+		case r >= '0' && r <= '9':
+			digitCount++
+		case r == ' ' || r == '\t':
+			spaceCount++
+		case r == '\n':
+			otherCount++ // 换行符约占 1 token
 		default:
-			otherCount++
+			otherCount++ // 标点、符号等
 		}
 	}
 
+	// 拉丁字符：字母和数字合并计算（BPE 通常将字母+数字组合为 token）
+	latinTotal := latinCount + digitCount
 	tokens := float64(cjkCount)*e.CJKRatio +
-		float64(latinCount)*e.LatinRatio +
+		float64(latinTotal)*e.LatinRatio +
+		float64(spaceCount)*0.1 + // 空格单独出现时几乎不占 token
 		float64(otherCount)*1.0
 
 	// 至少 1 token
@@ -60,10 +70,11 @@ func (e *TokenEstimator) EstimateText(text string) int {
 }
 
 // EstimateMessages 估算消息列表的总 token 数
+// assistant 消息的 ToolCalls（序列化的工具调用 JSON）同样计入估算
 func (e *TokenEstimator) EstimateMessages(messages []Message) int {
 	total := 0
 	for _, msg := range messages {
-		total += e.EstimateText(msg.Content) + e.OverheadPerMessage
+		total += e.EstimateText(msg.Content) + e.EstimateText(msg.ToolCalls) + e.OverheadPerMessage
 	}
 	return total
 }
@@ -76,10 +87,23 @@ func isCJK(r rune) bool {
 		unicode.Is(unicode.Hangul, r)
 }
 
+// isCJKPunct 判断是否为中文标点符号（这些符号通常单独占 1 个 token）
+func isCJKPunct(r rune) bool {
+	switch r {
+	case '，', '。', '！', '？', '；', '：',
+		'「', '」', '『', '』', '（', '）',
+		'【', '】', '《', '》',
+		'、', '·', '～', '〝', '〞':
+		return true
+	}
+	return false
+}
+
 // Message 简化的消息结构（避免循环依赖 llm 包）
 type Message struct {
-	Role    string
-	Content string
+	Role      string
+	Content   string
+	ToolCalls string // 序列化的工具调用 JSON（assistant 消息）
 }
 
 // CharCount 返回文本的字符数

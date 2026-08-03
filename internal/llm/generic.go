@@ -73,6 +73,11 @@ func (p *GenericProvider) Name() string {
 	return p.cfg.Name
 }
 
+// Model 返回供应商配置的默认模型名称
+func (p *GenericProvider) Model() string {
+	return p.cfg.Model
+}
+
 // MaxTokens 返回该模型支持的最大 token 数
 func (p *GenericProvider) MaxTokens() int {
 	return p.cfg.MaxContextTokens
@@ -164,7 +169,7 @@ func (p *GenericProvider) buildRequestBody(req ChatRequest, stream bool) ([]byte
 
 	apiReq := openAIRequest{
 		Model:       model,
-		Messages:    req.Messages,
+		Messages:    toOpenAIMessages(req.Messages),
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 		Stream:      stream,
@@ -194,6 +199,11 @@ func (p *GenericProvider) parseSSEStream(ctx context.Context, body io.ReadCloser
 	defer body.Close()
 
 	scanner := bufio.NewScanner(body)
+	// 设置更大的 buffer 以支持长行（默认 64KB 不够用，模型可能返回长 JSON）
+	const maxScanTokenSize = 1 << 20 // 1MB
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, maxScanTokenSize)
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -228,14 +238,28 @@ func (p *GenericProvider) parseSSEStream(ctx context.Context, body io.ReadCloser
 			Delta: delta.Content,
 		}
 
-		// 解析增量工具调用
+		// 解析增量工具调用（遍历全部元素，支持单个 chunk 携带多个并发 tool call）
 		if len(delta.ToolCalls) > 0 {
-			tc := delta.ToolCalls[0]
-			sc.ToolCallDelta = &ToolCall{
-				ID:        tc.ID,
-				Name:      tc.Function.Name,
-				Arguments: tc.Function.Arguments,
+			sc.ToolCallDeltas = make([]ToolCall, 0, len(delta.ToolCalls))
+			for i, tc := range delta.ToolCalls {
+				// 优先使用协议携带的 index（跨 chunk 归并保持稳定），缺省时退回切片位置
+				idx := i
+				if tc.Index != nil {
+					idx = *tc.Index
+				}
+				id := tc.ID
+				if id == "" {
+					// 某些 API（如 MiMo）流式响应不返回 tool call ID，与非流式路径一致生成备用 ID
+					id = fmt.Sprintf("call_%d", idx)
+				}
+				sc.ToolCallDeltas = append(sc.ToolCallDeltas, ToolCall{
+					ID:        id,
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				})
 			}
+			// 兼容旧消费方：单元素字段指向第一个工具调用
+			sc.ToolCallDelta = &sc.ToolCallDeltas[0]
 		}
 
 		// 检查是否结束

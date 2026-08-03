@@ -30,6 +30,7 @@ type UserSession struct {
 	ctxManager *ctxmgr.Manager
 	tracer     *trace.Tracer
 	limiter    *RateLimiter
+	exporter   *trace.Exporter // 可为 nil
 
 	mu sync.Mutex // 同用户串行保护
 }
@@ -44,6 +45,12 @@ type SessionDeps struct {
 	CtxConfig     ctxmgr.Config
 	Summarizer    ctxmgr.Summarizer // 可为 nil
 	RateLimit     RateLimitConfig
+	// Reflection 反思配置（nil 则禁用反思）
+	Reflection *engine.ReflectionConfig
+	// ToolGate 工具调用安全门禁（nil 则不检查）
+	ToolGate engine.ToolGate
+	// TraceExporter 追踪导出器（nil 则不导出）
+	TraceExporter *trace.Exporter
 }
 
 // NewUserSession 创建一个用户会话实例，分配独立的有状态组件。
@@ -64,6 +71,8 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 		MaxIterations: deps.MaxIterations,
 		SystemPrompt:  deps.SystemPrompt,
 		CtxManager:    ctxMgr,
+		Reflection:    deps.Reflection,
+		ToolGate:      deps.ToolGate,
 	})
 
 	now := time.Now()
@@ -76,6 +85,7 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 		ctxManager: ctxMgr,
 		tracer:     trace.NewTracer(),
 		limiter:    NewRateLimiter(deps.RateLimit),
+		exporter:   deps.TraceExporter,
 	}
 }
 
@@ -92,7 +102,13 @@ func (s *UserSession) Run(ctx context.Context, goal string) (*engine.ExecutionTr
 	}
 
 	s.tracer.Reset()
-	return s.engine.Run(ctx, goal)
+	result, err := s.engine.Run(ctx, goal)
+
+	// 导出本次执行的追踪 span（导出失败不影响任务结果）
+	if s.exporter != nil {
+		_ = s.exporter.Export(s.tracer.GetSpans())
+	}
+	return result, err
 }
 
 // ClearMemory 清空用户工作记忆。

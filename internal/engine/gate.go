@@ -1,0 +1,12 @@
+package engine
+
+import "context"
+
+// ToolGate 在工具执行前进行安全检查（如安全策略评估、人工审批）。
+// 返回 nil 表示放行；返回非 nil error 表示拦截，错误信息会作为
+// 该工具的"执行结果"反馈给 LLM，使 Agent 知晓调用被拒绝及原因。
+type ToolGate interface {
+	// CheckToolCall 检查一次工具调用是否被允许。
+	// toolName 为工具名，argsSummary 为工具参数的 JSON 摘要。
+	CheckToolCall(ctx context.Context, toolName, argsSummary string) error
+}

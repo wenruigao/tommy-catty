@@ -234,3 +234,132 @@ func TestToGatewayConfig_NoRetryConfig(t *testing.T) {
 		t.Error("Retry should be nil when not configured")
 	}
 }
+
+// ============================================================
+// resolveEnvVars：Search.TavilyAPIKey / Server.AuthAPIKey 展开
+// ============================================================
+
+func TestResolveEnvVars_TavilyAPIKey(t *testing.T) {
+	os.Setenv("TEST_TAVILY_KEY", "tvly-secret")
+	defer os.Unsetenv("TEST_TAVILY_KEY")
+
+	cfg := &Config{}
+	cfg.Search.TavilyAPIKey = "${TEST_TAVILY_KEY}"
+	cfg.resolveEnvVars()
+	if cfg.Search.TavilyAPIKey != "tvly-secret" {
+		t.Errorf("TavilyAPIKey = %q, want tvly-secret", cfg.Search.TavilyAPIKey)
+	}
+}
+
+func TestResolveEnvVars_ServerAuthAPIKey(t *testing.T) {
+	os.Setenv("TEST_AGENT_API_KEY", "agent-secret")
+	defer os.Unsetenv("TEST_AGENT_API_KEY")
+
+	cfg := &Config{}
+	cfg.Server.AuthAPIKey = "${TEST_AGENT_API_KEY}"
+	cfg.resolveEnvVars()
+	if cfg.Server.AuthAPIKey != "agent-secret" {
+		t.Errorf("AuthAPIKey = %q, want agent-secret", cfg.Server.AuthAPIKey)
+	}
+
+	// 未设置环境变量时展开为空串
+	cfg2 := &Config{}
+	cfg2.Server.AuthAPIKey = "${NONEXISTENT_AGENT_KEY_12345}"
+	cfg2.resolveEnvVars()
+	if cfg2.Server.AuthAPIKey != "" {
+		t.Errorf("AuthAPIKey = %q, want empty", cfg2.Server.AuthAPIKey)
+	}
+}
+
+// ============================================================
+// ReflectionEntry.ToReflectionConfig 测试
+// ============================================================
+
+func TestReflectionEntry_Disabled(t *testing.T) {
+	entry := ReflectionEntry{Enabled: false}
+	if got := entry.ToReflectionConfig(); got != nil {
+		t.Errorf("disabled entry should return nil, got %+v", got)
+	}
+}
+
+func TestReflectionEntry_EnabledDefaults(t *testing.T) {
+	entry := ReflectionEntry{Enabled: true}
+	got := entry.ToReflectionConfig()
+	if got == nil {
+		t.Fatal("enabled entry should return config")
+	}
+	if !got.Enabled {
+		t.Error("Enabled should be true")
+	}
+	// 未显式设置的字段沿用 engine 包默认值
+	if got.IntervalSteps != 5 {
+		t.Errorf("IntervalSteps = %d, want 5", got.IntervalSteps)
+	}
+	if got.SatisfactionThreshold != 0.6 {
+		t.Errorf("SatisfactionThreshold = %v, want 0.6", got.SatisfactionThreshold)
+	}
+	if got.MaxReplans != 2 {
+		t.Errorf("MaxReplans = %d, want 2", got.MaxReplans)
+	}
+	if got.DeviationThreshold != 1.5 {
+		t.Errorf("DeviationThreshold = %v, want 1.5", got.DeviationThreshold)
+	}
+}
+
+func TestReflectionEntry_EnabledOverrides(t *testing.T) {
+	entry := ReflectionEntry{
+		Enabled:               true,
+		IntervalSteps:         3,
+		SatisfactionThreshold: 0.4,
+		MaxReplans:            1,
+		DeviationThreshold:    2.0,
+	}
+	got := entry.ToReflectionConfig()
+	if got == nil {
+		t.Fatal("enabled entry should return config")
+	}
+	if got.IntervalSteps != 3 {
+		t.Errorf("IntervalSteps = %d, want 3", got.IntervalSteps)
+	}
+	if got.SatisfactionThreshold != 0.4 {
+		t.Errorf("SatisfactionThreshold = %v, want 0.4", got.SatisfactionThreshold)
+	}
+	if got.MaxReplans != 1 {
+		t.Errorf("MaxReplans = %d, want 1", got.MaxReplans)
+	}
+	if got.DeviationThreshold != 2.0 {
+		t.Errorf("DeviationThreshold = %v, want 2.0", got.DeviationThreshold)
+	}
+}
+
+// ============================================================
+// resolveEnvVars：Server.AuthJWTSecret 展开
+// ============================================================
+
+func TestResolveEnvVars_ServerAuthJWTSecret(t *testing.T) {
+	os.Setenv("TEST_JWT_SECRET", "jwt-secret-value")
+	defer os.Unsetenv("TEST_JWT_SECRET")
+
+	cfg := &Config{}
+	cfg.Server.AuthJWTSecret = "${TEST_JWT_SECRET}"
+	cfg.resolveEnvVars()
+	if cfg.Server.AuthJWTSecret != "jwt-secret-value" {
+		t.Errorf("AuthJWTSecret = %q, want jwt-secret-value", cfg.Server.AuthJWTSecret)
+	}
+
+	// 未设置环境变量时展开为空串
+	cfg2 := &Config{}
+	cfg2.Server.AuthJWTSecret = "${NONEXISTENT_JWT_SECRET_12345}"
+	cfg2.resolveEnvVars()
+	if cfg2.Server.AuthJWTSecret != "" {
+		t.Errorf("AuthJWTSecret = %q, want empty", cfg2.Server.AuthJWTSecret)
+	}
+}
+
+func TestApplyDefaults_TraceExportPath(t *testing.T) {
+	cfg := &Config{}
+	cfg.applyDefaults()
+	if cfg.Engine.TraceExportPath != "" {
+		t.Errorf("TraceExportPath 默认应为空（禁用导出），得到 %q", cfg.Engine.TraceExportPath)
+	}
+}

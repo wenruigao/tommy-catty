@@ -23,6 +23,7 @@ type TokenRecord struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	CachedTokens     int // 命中提示缓存的 token 数（来自 Usage.PromptDetails）
 	Model            string
 	Timestamp        time.Time
 }
@@ -32,9 +33,18 @@ type UsageSummary struct {
 	TotalPromptTokens     int            `json:"total_prompt_tokens"`
 	TotalCompletionTokens int            `json:"total_completion_tokens"`
 	TotalTokens           int            `json:"total_tokens"`
+	TotalCachedTokens     int            `json:"total_cached_tokens"` // 累计命中提示缓存的 token 数
 	ByCategory            map[string]int `json:"by_category"`
 	ByModel               map[string]int `json:"by_model"`
 	RequestCount          int            `json:"request_count"`
+}
+
+// CacheHitRatio 返回整体提示缓存命中率（0-1）。无输入时返回 0。
+func (s UsageSummary) CacheHitRatio() float64 {
+	if s.TotalPromptTokens <= 0 {
+		return 0
+	}
+	return float64(s.TotalCachedTokens) / float64(s.TotalPromptTokens)
 }
 
 // Meter 分层 Token 计量器（并发安全）。
@@ -71,6 +81,18 @@ func (m *Meter) Record(rec TokenRecord) {
 	}
 }
 
+// RecordUsage 以 Usage 结构记录一次调用，透传提示缓存命中明细。
+func (m *Meter) RecordUsage(category UsageCategory, model string, usage Usage) {
+	m.Record(TokenRecord{
+		Category:         category,
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+		CachedTokens:     usage.PromptDetails.CachedTokens,
+		Model:            model,
+	})
+}
+
 // CheckBudget 检查是否超出日预算。返回 (已用, 上限, 是否超限)。
 func (m *Meter) CheckBudget() (used, limit int, exceeded bool) {
 	m.mu.Lock()
@@ -96,6 +118,7 @@ func (m *Meter) Summary() UsageSummary {
 		s.TotalPromptTokens += r.PromptTokens
 		s.TotalCompletionTokens += r.CompletionTokens
 		s.TotalTokens += r.TotalTokens
+		s.TotalCachedTokens += r.CachedTokens
 		s.ByCategory[string(r.Category)] += r.TotalTokens
 		s.ByModel[r.Model] += r.TotalTokens
 		s.RequestCount++

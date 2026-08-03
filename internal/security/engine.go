@@ -3,7 +3,6 @@ package security
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -27,8 +26,9 @@ func NewEngine() *Engine {
 	}
 }
 
-// AddPolicy 向引擎中添加一条策略
+// AddPolicy 向引擎中添加一条策略（自动预编译正则）
 func (e *Engine) AddPolicy(p Policy) {
+	p.When.compilePattern()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.policies = append(e.policies, p)
@@ -52,7 +52,7 @@ type yamlPolicyFile struct {
 	Policies []Policy `yaml:"policies"`
 }
 
-// LoadFromYAML 从 YAML 数据中加载策略列表
+// LoadFromYAML 从 YAML 数据中加载策略列表（自动预编译正则）
 func (e *Engine) LoadFromYAML(data []byte) error {
 	var file yamlPolicyFile
 	if err := yaml.Unmarshal(data, &file); err != nil {
@@ -61,11 +61,14 @@ func (e *Engine) LoadFromYAML(data []byte) error {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.policies = append(e.policies, file.Policies...)
+	for _, p := range file.Policies {
+		p.When.compilePattern()
+		e.policies = append(e.policies, p)
+	}
 	return nil
 }
 
-// Evaluate 评估检查点，返回所有匹配的策略决策（按优先级排序）
+// Evaluate 评估检查点，返回匹配的策略决策（按优先级排序，deny 短路）
 func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -81,12 +84,16 @@ func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 		}
 	}
 
+	if len(matched) == 0 {
+		return nil
+	}
+
 	// 按优先级排序（数值越小优先级越高）
 	sort.Slice(matched, func(i, j int) bool {
 		return matched[i].Priority < matched[j].Priority
 	})
 
-	// 生成决策列表
+	// 生成决策列表，deny 效果短路（不再评估后续策略）
 	decisions := make([]Decision, 0, len(matched))
 	for _, p := range matched {
 		decisions = append(decisions, Decision{
@@ -94,6 +101,9 @@ func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 			PolicyID: p.ID,
 			Message:  p.Then.Message,
 		})
+		if p.Then.Effect == EffectDeny {
+			break // deny 是最终决策，不再继续
+		}
 	}
 
 	return decisions
@@ -123,14 +133,13 @@ func matchesCondition(cond PolicyCondition, cp Checkpoint) bool {
 		}
 	}
 
-	// 检查正则表达式匹配
+	// 检查正则表达式匹配（使用预编译正则）
 	if cond.Pattern != "" {
-		re, err := regexp.Compile(cond.Pattern)
-		if err != nil {
-			// 正则表达式无效时不匹配
+		if cond.compiledPattern == nil {
+			// 正则无效，视为不匹配
 			return false
 		}
-		if !re.MatchString(cp.Content) {
+		if !cond.compiledPattern.MatchString(cp.Content) {
 			return false
 		}
 	}

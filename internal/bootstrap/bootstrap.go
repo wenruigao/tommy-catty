@@ -4,11 +4,13 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/tommy-cat/agent/config"
 	"github.com/tommy-cat/agent/internal/kb"
+	"github.com/tommy-cat/agent/internal/mcp"
 	"github.com/tommy-cat/agent/internal/tool"
 	"github.com/tommy-cat/agent/internal/tool/dbquery"
 	"github.com/tommy-cat/agent/internal/tool/kbtools"
@@ -16,11 +18,11 @@ import (
 
 // Result 汇总 bootstrap 过程构建的资源，便于调用方做清理。
 type Result struct {
-	Pool       *dbquery.Pool
-	KBManager  *kb.Manager
-	DBCount    int
-	KBCount    int
-	Warnings   []string
+	Pool      *dbquery.Pool
+	KBManager *kb.Manager
+	DBCount   int
+	KBCount   int
+	Warnings  []string
 }
 
 // Close 释放底层资源（数据库连接池）。
@@ -116,4 +118,66 @@ func toKBConfig(e config.KnowledgeBaseEntry) kb.KBConfig {
 		MaxFileMB:  e.MaxFileMB,
 		TopK:       e.TopK,
 	}
+}
+
+// MCPResult 汇总 MCP 装配结果，便于调用方做清理。
+type MCPResult struct {
+	// Manager MCP 连接管理器（未配置时为 nil）
+	Manager *mcp.Manager
+	// ServerCount 成功连接的 server 数
+	ServerCount int
+	// ToolCount 注册的远程工具数
+	ToolCount int
+	// Warnings 连接失败的告警信息（不中断启动）
+	Warnings []string
+}
+
+// Close 关闭所有 MCP 连接。
+func (r *MCPResult) Close() {
+	if r.Manager != nil {
+		r.Manager.CloseAll()
+	}
+}
+
+// RegisterMCPTools 根据配置连接 MCP Server 并将其工具注册到工具注册表。
+// 配置为空时直接跳过；单个 server 连接失败只记录告警，不中断启动。
+func RegisterMCPTools(ctx context.Context, cfg *config.Config, registry *tool.Registry) *MCPResult {
+	res := &MCPResult{}
+	if len(cfg.MCP.Servers) == 0 {
+		return res
+	}
+
+	configs := make([]mcp.ClientConfig, 0, len(cfg.MCP.Servers))
+	for _, e := range cfg.MCP.Servers {
+		configs = append(configs, toMCPClientConfig(e))
+	}
+
+	mgr := mcp.NewManager()
+	for _, err := range mgr.ConnectAll(ctx, configs) {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("MCP server 连接失败: %v", err))
+	}
+	res.ServerCount = len(mgr.Clients())
+	res.ToolCount = mgr.RegisterTools(registry)
+	res.Manager = mgr
+	return res
+}
+
+// toMCPClientConfig 将 YAML 配置转换为 mcp.ClientConfig。
+func toMCPClientConfig(e config.MCPServerEntry) mcp.ClientConfig {
+	cfg := mcp.ClientConfig{
+		Name:             e.Name,
+		Transport:        e.Transport,
+		Command:          e.Command,
+		Args:             e.Args,
+		Env:              e.Env,
+		WorkDir:          e.WorkDir,
+		URL:              e.URL,
+		Headers:          e.Headers,
+		ToolPrefix:       e.ToolPrefix,
+		DefaultRiskLevel: e.RiskLevel,
+	}
+	if e.TimeoutSeconds > 0 {
+		cfg.Timeout = time.Duration(e.TimeoutSeconds) * time.Second
+	}
+	return cfg
 }

@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -94,17 +95,50 @@ func buildReflectionPrompt(goal string, recentSteps []StepResult) string {
 	return sb.String()
 }
 
-// parseReflection 解析 LLM 反思输出（宽松解析，失败时返回默认继续）。
+// parseReflection 解析 LLM 反思输出为结构化结果。
+// 优先使用 JSON 解析，失败时降级为关键词提取。
 func parseReflection(content string) ReflectionResult {
 	result := ReflectionResult{Satisfaction: 0.8, Adjustment: "continue"}
 
+	// 提取 JSON 块（LLM 可能在 JSON 前后添加说明文字）
 	start := strings.Index(content, "{")
 	end := strings.LastIndex(content, "}")
 	if start < 0 || end <= start {
 		return result
 	}
-
 	jsonStr := content[start : end+1]
+
+	// 优先尝试 JSON 解析
+	// Satisfaction 使用指针以区分"字段缺失"与"显式为 0"：缺失时保留默认值 0.8，
+	// 避免把"模型没给分"误判为极度不满意。
+	var parsed struct {
+		Satisfaction *float64 `json:"satisfaction"`
+		Issues       []string `json:"issues"`
+		Adjustment   string   `json:"adjustment"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err == nil {
+		if parsed.Satisfaction != nil {
+			result.Satisfaction = *parsed.Satisfaction
+		}
+		result.Issues = parsed.Issues
+		if parsed.Adjustment != "" {
+			result.Adjustment = parsed.Adjustment
+		}
+		// 校验 adjustment 合法值
+		switch result.Adjustment {
+		case "continue", "revise", "replan":
+			// 合法
+		default:
+			result.Adjustment = "continue"
+		}
+		// 校验 satisfaction 范围
+		if result.Satisfaction < 0 || result.Satisfaction > 1 {
+			result.Satisfaction = 0.5
+		}
+		return result
+	}
+
+	// JSON 解析失败，降级为关键词提取
 	if strings.Contains(jsonStr, "\"replan\"") {
 		result.Adjustment = "replan"
 		result.Satisfaction = 0.3
@@ -116,7 +150,9 @@ func parseReflection(content string) ReflectionResult {
 	if idx := strings.Index(jsonStr, "\"satisfaction\""); idx >= 0 {
 		var val float64
 		if n, _ := fmt.Sscanf(jsonStr[idx:], `"satisfaction": %f`, &val); n == 1 {
-			result.Satisfaction = val
+			if val >= 0 && val <= 1 {
+				result.Satisfaction = val
+			}
 		}
 	}
 
@@ -176,7 +212,8 @@ func buildReplanPrompt(goal string, successfulObs []string) string {
 }
 
 // executeReflection 执行一次反思调用（使用 LLM，无工具）。
-func (e *Engine) executeReflection(ctx context.Context, goal string, recentSteps []StepResult) *ReflectionResult {
+// 若本次调用返回了 token 用量且 trace 非 nil，则累加到本次 Run 的 token 统计。
+func (e *Engine) executeReflection(ctx context.Context, goal string, recentSteps []StepResult, trace *ExecutionTrace) *ReflectionResult {
 	if e.llmGateway == nil {
 		return nil
 	}
@@ -190,6 +227,11 @@ func (e *Engine) executeReflection(ctx context.Context, goal string, recentSteps
 	resp, err := e.llmGateway.Chat(ctx, msgs, nil)
 	if err != nil {
 		return nil // 反思失败不阻断主流程
+	}
+
+	// 反思调用的 token 消耗计入当次 Run 的总用量
+	if trace != nil {
+		trace.TokenUsage += resp.Usage.TotalTokens
 	}
 
 	result := parseReflection(resp.Content)

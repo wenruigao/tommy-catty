@@ -203,6 +203,7 @@ func TestMatchesCondition_ActionType(t *testing.T) {
 
 func TestMatchesCondition_Pattern_Match(t *testing.T) {
 	cond := PolicyCondition{Pattern: `rm\s+-rf`}
+	cond.compilePattern()
 	cp := Checkpoint{Content: "rm -rf /tmp"}
 	if !matchesCondition(cond, cp) {
 		t.Error("Pattern should match rm -rf")
@@ -211,6 +212,7 @@ func TestMatchesCondition_Pattern_Match(t *testing.T) {
 
 func TestMatchesCondition_Pattern_NoMatch(t *testing.T) {
 	cond := PolicyCondition{Pattern: `rm\s+-rf`}
+	cond.compilePattern()
 	cp := Checkpoint{Content: "echo hello"}
 	if matchesCondition(cond, cp) {
 		t.Error("Pattern should not match safe command")
@@ -219,6 +221,7 @@ func TestMatchesCondition_Pattern_NoMatch(t *testing.T) {
 
 func TestMatchesCondition_Pattern_Invalid(t *testing.T) {
 	cond := PolicyCondition{Pattern: `[invalid`}
+	cond.compilePattern()
 	cp := Checkpoint{Content: "anything"}
 	if matchesCondition(cond, cp) {
 		t.Error("invalid pattern should not match")
@@ -339,8 +342,9 @@ func TestEngine_Evaluate_MultipleMatches_Sorted(t *testing.T) {
 		Then:     PolicyAction{Effect: EffectDeny},
 	})
 	decisions := e.Evaluate(Checkpoint{})
-	if len(decisions) != 2 {
-		t.Fatalf("expected 2 decisions, got %d", len(decisions))
+	// deny 短路：高优先级 deny 后不再评估低优先级策略
+	if len(decisions) != 1 {
+		t.Fatalf("expected 1 decision (deny short-circuit), got %d", len(decisions))
 	}
 	if decisions[0].PolicyID != "high-priority" {
 		t.Errorf("first decision should be high-priority, got %q", decisions[0].PolicyID)

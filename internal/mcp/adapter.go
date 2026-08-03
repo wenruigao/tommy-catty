@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/tommy-cat/agent/internal/tool"
 )
@@ -170,29 +171,33 @@ func NewManager() *Manager {
 	return &Manager{}
 }
 
-// ConnectAll 连接所有配置的 MCP Server
-func (m *Manager) ConnectAll(ctx context.Context, configs []ClientConfig) error {
-	var lastErr error
+// ConnectAll 连接所有配置的 MCP Server。
+// 单个 server 连接失败不阻塞其他 server，返回所有失败的错误列表。
+func (m *Manager) ConnectAll(ctx context.Context, configs []ClientConfig) []error {
+	var errs []error
 	for _, cfg := range configs {
 		client := NewClient(cfg)
 		if err := client.Connect(ctx); err != nil {
-			lastErr = err
-			// 单个 server 连接失败不阻塞其他
+			errs = append(errs, err)
 			continue
 		}
 		m.clients = append(m.clients, client)
 	}
-	return lastErr
+	return errs
 }
 
-// RegisterTools 将所有已连接 MCP Server 的工具注册到本地 Registry
+// RegisterTools 将所有已连接 MCP Server 的工具注册到本地 Registry。
+// 风险等级从 ClientConfig.DefaultRiskLevel 读取，默认 L1（低写入）。
 func (m *Manager) RegisterTools(registry *tool.Registry) int {
 	count := 0
 	for _, client := range m.clients {
+		riskLevel := tool.RiskLowWrite // 默认 L1
+		if client.cfg.DefaultRiskLevel > 0 {
+			riskLevel = tool.RiskLevel(client.cfg.DefaultRiskLevel)
+		}
 		for _, toolDef := range client.Tools() {
 			adapter := NewMCPToolAdapter(client, toolDef)
-			// MCP 工具默认风险等级为 L1（低写入），超时 60s
-			registry.Register(adapter, tool.RiskLowWrite, 60*1e9) // 60s
+			registry.Register(adapter, riskLevel, 60*time.Second)
 			count++
 		}
 	}

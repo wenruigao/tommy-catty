@@ -36,12 +36,12 @@ type ValidationResult struct {
 
 // 危险模式正则列表（第二层防御）。
 var dangerousPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\bINTO\s+(OUTFILE|DUMPFILE)\b`), // MySQL 写文件
-	regexp.MustCompile(`(?i)\bLOAD_FILE\s*\(`),              // MySQL 读服务器文件
-	regexp.MustCompile(`(?i)\bpg_read_file\s*\(`),           // PostgreSQL 读文件
-	regexp.MustCompile(`(?i)\bxp_cmdshell\b`),               // SQL Server 命令执行
+	regexp.MustCompile(`(?i)\bINTO\s+(OUTFILE|DUMPFILE)\b`),     // MySQL 写文件
+	regexp.MustCompile(`(?i)\bLOAD_FILE\s*\(`),                  // MySQL 读服务器文件
+	regexp.MustCompile(`(?i)\bpg_read_file\s*\(`),               // PostgreSQL 读文件
+	regexp.MustCompile(`(?i)\bxp_cmdshell\b`),                   // SQL Server 命令执行
 	regexp.MustCompile(`(?i)\b(SLEEP|BENCHMARK|pg_sleep)\s*\(`), // 时间盲注/资源耗尽
-	regexp.MustCompile(`(?i)\b(GRANT|REVOKE)\b`),            // 权限变更
+	regexp.MustCompile(`(?i)\b(GRANT|REVOKE)\b`),                // 权限变更
 }
 
 // 非 SELECT 的写/DDL 语句首关键词（第一层防御）。

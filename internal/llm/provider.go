@@ -13,8 +13,10 @@ const (
 
 // Message 表示对话中的一条消息
 type Message struct {
-	Role    string `json:"role"`    // 角色: system, user, assistant, tool
-	Content string `json:"content"` // 消息内容
+	Role       string     `json:"role"`                   // 角色: system, user, assistant, tool
+	Content    string     `json:"content"`                // 消息内容
+	ToolCallID string     `json:"tool_call_id,omitempty"` // 工具结果对应的调用 ID（role=tool 时必须）
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // assistant 消息中的工具调用列表
 }
 
 // ToolCall 表示模型返回的工具调用请求
@@ -43,9 +45,23 @@ type ChatRequest struct {
 
 // Usage 表示 token 用量统计
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`     // 输入 token 数
-	CompletionTokens int `json:"completion_tokens"` // 输出 token 数
-	TotalTokens      int `json:"total_tokens"`      // 总 token 数
+	PromptTokens     int                `json:"prompt_tokens"`         // 输入 token 数
+	CompletionTokens int                `json:"completion_tokens"`     // 输出 token 数
+	TotalTokens      int                `json:"total_tokens"`          // 总 token 数
+	PromptDetails    PromptTokenDetails `json:"prompt_tokens_details"` // 输入 token 明细（含缓存命中）
+}
+
+// PromptTokenDetails 输入 token 的细分统计。
+type PromptTokenDetails struct {
+	CachedTokens int `json:"cached_tokens"` // 命中提示缓存的 token 数
+}
+
+// CacheHitRatio 返回提示缓存命中率（0-1）。无输入时返回 0。
+func (u Usage) CacheHitRatio() float64 {
+	if u.PromptTokens <= 0 {
+		return 0
+	}
+	return float64(u.PromptDetails.CachedTokens) / float64(u.PromptTokens)
 }
 
 // ChatResponse 表示聊天补全的完整响应
@@ -59,9 +75,10 @@ type ChatResponse struct {
 
 // StreamChunk 表示流式输出中的一个数据块
 type StreamChunk struct {
-	Delta         string    `json:"delta"`                     // 增量文本内容
-	ToolCallDelta *ToolCall `json:"tool_call_delta,omitempty"` // 增量工具调用信息
-	Done          bool      `json:"done"`                      // 是否为最后一个块
+	Delta          string     `json:"delta"`                      // 增量文本内容
+	ToolCallDelta  *ToolCall  `json:"tool_call_delta,omitempty"`  // 增量工具调用信息（多个并发调用时仅含第一个，兼容旧消费方）
+	ToolCallDeltas []ToolCall `json:"tool_call_deltas,omitempty"` // 增量工具调用列表（支持单个 chunk 携带多个并发 tool call）
+	Done           bool       `json:"done"`                       // 是否为最后一个块
 }
 
 // LLMProvider 定义大语言模型供应商的统一接口
@@ -74,6 +91,9 @@ type LLMProvider interface {
 
 	// Name 返回供应商名称标识
 	Name() string
+
+	// Model 返回供应商配置的默认模型名称
+	Model() string
 
 	// MaxTokens 返回该供应商支持的最大 token 数
 	MaxTokens() int

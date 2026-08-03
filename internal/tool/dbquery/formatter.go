@@ -8,10 +8,10 @@ import (
 
 // QueryResult 查询结果的结构化表示。
 type QueryResult struct {
-	Columns  []string
-	Rows     [][]string
-	RowCount int
-	Duration time.Duration
+	Columns   []string
+	Rows      [][]string
+	RowCount  int
+	Duration  time.Duration
 	Truncated bool // 是否因超过上限被截断
 }
 

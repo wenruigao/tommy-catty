@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -17,14 +18,32 @@ import (
 // WebSearchTool - 网络搜索工具
 // ============================================================
 
-// WebSearchTool 调用搜索 API 返回搜索结果。
-// 当前为占位实现，后续可接入真实搜索服务。
-type WebSearchTool struct{}
+// Searcher 定义搜索能力的抽象接口，供 WebSearchTool 使用。
+type Searcher interface {
+	Search(ctx context.Context, query string, maxResults int) ([]SearchResult, error)
+}
+
+// SearchResult 搜索结果条目。
+type SearchResult struct {
+	Title   string
+	URL     string
+	Snippet string
+}
+
+// WebSearchTool 调用真实搜索引擎返回搜索结果。
+type WebSearchTool struct {
+	searcher Searcher
+}
+
+// NewWebSearchTool 创建搜索工具，searcher 为搜索后端实现。
+func NewWebSearchTool(searcher Searcher) *WebSearchTool {
+	return &WebSearchTool{searcher: searcher}
+}
 
 func (t *WebSearchTool) Name() string { return "web_search" }
 
 func (t *WebSearchTool) Description() string {
-	return "搜索互联网获取相关信息，返回搜索结果摘要列表"
+	return "搜索互联网获取相关信息，返回搜索结果摘要列表。用于查找最新信息、技术文档、新闻等。"
 }
 
 func (t *WebSearchTool) Parameters() JSONSchema {
@@ -61,21 +80,41 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]interface{}
 		}
 	}
 
-	// 占位实现：返回格式化的模拟搜索结果
-	// TODO: 接入真实搜索 API（如 SerpAPI、Bing Search 等）
+	results, err := t.searcher.Search(ctx, query, maxResults)
+	if err != nil {
+		return Result{}, fmt.Errorf("search failed: %w", err)
+	}
+
+	if len(results) == 0 {
+		return Result{
+			Output: fmt.Sprintf("未找到与 %q 相关的搜索结果。", query),
+			Metadata: map[string]interface{}{
+				"query":        query,
+				"result_count": 0,
+			},
+		}, nil
+	}
+
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("搜索结果 (关键词: %q, 最多 %d 条):\n\n", query, maxResults))
-	for i := 1; i <= maxResults; i++ {
-		sb.WriteString(fmt.Sprintf("%d. [占位结果] 关于 %q 的搜索结果 #%d\n", i, query, i))
-		sb.WriteString(fmt.Sprintf("   摘要: 这是关于 %q 的第 %d 条模拟搜索结果。\n\n", query, i))
+	sb.WriteString(fmt.Sprintf("搜索结果 (关键词: %q, 共 %d 条):\n\n", query, len(results)))
+	for i, r := range results {
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, r.Title))
+		sb.WriteString(fmt.Sprintf("   链接: %s\n", r.URL))
+		if r.Snippet != "" {
+			snippet := r.Snippet
+			if len([]rune(snippet)) > 300 {
+				snippet = string([]rune(snippet)[:300]) + "..."
+			}
+			sb.WriteString(fmt.Sprintf("   摘要: %s\n", snippet))
+		}
+		sb.WriteString("\n")
 	}
 
 	return Result{
 		Output: sb.String(),
 		Metadata: map[string]interface{}{
 			"query":        query,
-			"result_count": maxResults,
-			"source":       "placeholder",
+			"result_count": len(results),
 		},
 	}, nil
 }
@@ -303,18 +342,30 @@ func (t *FileReadTool) Execute(ctx context.Context, args map[string]interface{})
 	}, nil
 }
 
+// containsDotDotSegment 判断路径中是否包含独立的 ".." 路径段。
+// 仅当 ".." 作为完整路径段出现时返回 true（如 "../x"、"x/.."、"x/../y"、".."），
+// 文件名中包含 ".." 的合法路径（如 "foo..bar.txt"、"a..b/c.txt"）不受影响。
+func containsDotDotSegment(path string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 // validatePath 验证文件路径的安全性，防止路径穿越攻击
 func (t *FileReadTool) validatePath(path string) error {
+	// 检查原始路径中的穿越组件（在 Abs 解析之前）：
+	// 仅拒绝 ".." 作为独立路径段的形式，避免误伤 foo..bar.txt 之类的合法文件名
+	if containsDotDotSegment(path) {
+		return fmt.Errorf("path traversal detected: %s", path)
+	}
+
 	// 解析为绝对路径
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("invalid path: %w", err)
-	}
-
-	// 检查路径穿越
-	cleaned := filepath.Clean(absPath)
-	if cleaned != absPath {
-		return fmt.Errorf("path traversal detected: %s", path)
 	}
 
 	// 如果设置了白名单目录，验证路径是否在白名单内
@@ -444,14 +495,14 @@ func (t *FileWriteTool) Execute(ctx context.Context, args map[string]interface{}
 
 // validatePath 验证写入路径的安全性
 func (t *FileWriteTool) validatePath(path string) error {
+	// 检查原始路径中的穿越组件：仅拒绝 ".." 作为独立路径段的形式
+	if containsDotDotSegment(path) {
+		return fmt.Errorf("path traversal detected: %s", path)
+	}
+
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("invalid path: %w", err)
-	}
-
-	cleaned := filepath.Clean(absPath)
-	if cleaned != absPath {
-		return fmt.Errorf("path traversal detected: %s", path)
 	}
 
 	// 禁止写入敏感系统路径
@@ -480,16 +531,23 @@ func (t *FileWriteTool) validatePath(path string) error {
 }
 
 // ============================================================
-// CodeRunTool - 代码执行工具
+// CodeRunTool - 代码执行工具（进程组隔离 + 输出截断）
 // ============================================================
 
-// CodeRunTool 在子进程中执行 Python 或 Go 代码片段
-type CodeRunTool struct{}
+// CodeRunTool 在受限子进程中执行 Python 或 Go 代码片段。
+// 安全措施：独立临时目录（执行后清理）+ 独立进程组 + 输出截断 + 环境隔离；
+// 执行超时（墙钟）由注册表统一控制。
+type CodeRunTool struct {
+	// MaxOutputBytes 最大输出字节数（默认 1MB），超出部分会被截断
+	MaxOutputBytes int
+}
 
 func (t *CodeRunTool) Name() string { return "code_run" }
 
 func (t *CodeRunTool) Description() string {
-	return "在沙箱子进程中执行 Python 或 Go 代码，返回标准输出和错误输出"
+	return "在隔离的子进程中执行 Python 或 Go 代码，返回标准输出和错误输出。" +
+		"隔离措施：独立临时目录（执行后清理）、独立进程组、输出超过上限自动截断（默认 1MB）；" +
+		"执行超时由工具注册表统一控制（默认 30 秒墙钟时间）。"
 }
 
 func (t *CodeRunTool) Parameters() JSONSchema {
@@ -520,42 +578,59 @@ func (t *CodeRunTool) Execute(ctx context.Context, args map[string]interface{}) 
 		return Result{}, fmt.Errorf("parameter 'code' is required")
 	}
 
+	maxOutput := t.MaxOutputBytes
+	if maxOutput <= 0 {
+		maxOutput = 1 << 20 // 1MB
+	}
+
+	// 创建隔离的临时工作目录
+	workDir, err := os.MkdirTemp("", "agent_code_*")
+	if err != nil {
+		return Result{}, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(workDir)
+
 	var cmd *exec.Cmd
 	var tmpFile string
 
 	switch strings.ToLower(language) {
 	case "python":
-		// 写入临时文件后执行
-		tmpFile = filepath.Join(os.TempDir(), fmt.Sprintf("agent_code_%d.py", time.Now().UnixNano()))
-		if err := os.WriteFile(tmpFile, []byte(code), 0644); err != nil {
+		tmpFile = filepath.Join(workDir, "main.py")
+		if err := os.WriteFile(tmpFile, []byte(code), 0600); err != nil {
 			return Result{}, fmt.Errorf("failed to write temp file: %w", err)
 		}
-		defer os.Remove(tmpFile)
-		cmd = exec.CommandContext(ctx, "python3", tmpFile)
+		cmd = exec.CommandContext(ctx, "python3", "-u", tmpFile)
 
 	case "go":
-		tmpFile = filepath.Join(os.TempDir(), fmt.Sprintf("agent_code_%d.go", time.Now().UnixNano()))
-		if err := os.WriteFile(tmpFile, []byte(code), 0644); err != nil {
+		tmpFile = filepath.Join(workDir, "main.go")
+		if err := os.WriteFile(tmpFile, []byte(code), 0600); err != nil {
 			return Result{}, fmt.Errorf("failed to write temp file: %w", err)
 		}
-		defer os.Remove(tmpFile)
 		cmd = exec.CommandContext(ctx, "go", "run", tmpFile)
 
 	default:
 		return Result{}, fmt.Errorf("unsupported language: %s (supported: python, go)", language)
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// 进程隔离：独立工作目录 + 受限环境变量 + 独立进程组
+	cmd.Dir = workDir
+	cmd.Env = codeRunEnv()
+	cmd.SysProcAttr = resourceLimits()
 
-	err := cmd.Run()
+	// 输出限制
+	stdout := &limitedWriter{limit: maxOutput}
+	stderr := &limitedWriter{limit: maxOutput}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	err = cmd.Run()
 
 	result := Result{
 		Output: stdout.String(),
 		Metadata: map[string]interface{}{
-			"language": language,
-			"exit_ok":  err == nil,
+			"language":           language,
+			"exit_ok":            err == nil,
+			"output_limit_bytes": maxOutput,
 		},
 	}
 
@@ -564,42 +639,100 @@ func (t *CodeRunTool) Execute(ctx context.Context, args map[string]interface{}) 
 		if result.Error == "" {
 			result.Error = err.Error()
 		}
-	} else if stderr.Len() > 0 {
-		// 即使成功也可能有 stderr 警告信息
-		result.Metadata["stderr"] = stderr.String()
+	} else if s := stderr.String(); s != "" {
+		result.Metadata["stderr"] = s
 	}
 
 	return result, nil
 }
 
+// codeRunEnv 为代码执行构建受限环境变量。
+func codeRunEnv() []string {
+	return []string{
+		"PATH=/usr/local/bin:/usr/bin:/bin",
+		"HOME=" + os.TempDir(),
+		"TMPDIR=" + os.TempDir(),
+		"LANG=en_US.UTF-8",
+		"PYTHONDONTWRITEBYTECODE=1", // Python 不生成 .pyc
+		"PYTHONUNBUFFERED=1",        // Python 无缓冲输出
+	}
+}
+
 // ============================================================
-// ShellExecTool - Shell 命令执行工具
+// ShellExecTool - Shell 命令执行工具（多层安全防护）
 // ============================================================
 
-// ShellExecTool 在受限环境中执行 shell 命令
+// ShellExecTool 在受限环境中执行 shell 命令。
+// 安全防护：命令分段解析 + 危险二进制检测 + 管道/链式命令检查 + 环境隔离。
 type ShellExecTool struct {
-	// BlockedCommands 禁止执行的命令前缀列表
-	BlockedCommands []string
+	// BlockedBinaries 禁止执行的命令/二进制名称（匹配命令第一个 token）
+	BlockedBinaries map[string]bool
+	// BlockedPatterns 危险命令模式（正则）
+	BlockedPatterns []*regexp.Regexp
 }
 
 func NewShellExecTool() *ShellExecTool {
+	// 注意：rm 不在此处整体封禁——rm 属于"可争议"命令（rm file.txt 是合法操作），
+	// 其破坏性形式（rm -rf / 等）交由安全策略层（internal/security + config/policy.yaml）裁决；
+	// 工具层只兜底绝对危险的命令。
+	blocked := map[string]bool{
+		"mkfs":      true,
+		"dd":        true,
+		"shutdown":  true,
+		"reboot":    true,
+		"halt":      true,
+		"poweroff":  true,
+		"init":      true,
+		"killall":   true,
+		"pkill":     true,
+		"iptables":  true,
+		"ip6tables": true,
+		"nft":       true,
+		"fdisk":     true,
+		"parted":    true,
+		"sfdisk":    true,
+		"wipefs":    true,
+		"shred":     true,
+		"swapoff":   true,
+		"umount":    true,
+	}
+
+	// 只保留绝对危险的模式；rm -rf 等"可争议"命令由安全策略层拦截。
+	patterns := []*regexp.Regexp{
+		// Fork bomb
+		regexp.MustCompile(`:\(\)\s*\{.*\|.*&\s*\}\s*;`),
+		// 下载并执行（curl/wget piped to shell）
+		regexp.MustCompile(`(?i)(curl|wget)\s+.*\|\s*(sh|bash|zsh|dash)`),
+		// chmod 777 系统目录
+		regexp.MustCompile(`(?i)chmod\s+(-R\s+)?(777|a\+rwx)\s+/`),
+		// 格式化磁盘
+		regexp.MustCompile(`(?i)mkfs\.`),
+		// dd 写入设备
+		regexp.MustCompile(`(?i)dd\s+.*of=/dev/`),
+		// 覆盖 MBR
+		regexp.MustCompile(`(?i)dd\s+.*of=/dev/[shv]d`),
+		// 重定向覆盖 /etc/passwd 等
+		regexp.MustCompile(`(?i)(>|>>)\s*/(etc|usr|bin|sbin)/`),
+		// eval 执行 base64 编码的恶意代码
+		regexp.MustCompile(`(?i)eval\s+.*base64`),
+		// python/perl/ruby 反弹 shell
+		regexp.MustCompile(`(?i)(python|perl|ruby|node)\s+.*socket\..*(connect|listen)`),
+		// nc (netcat) 监听/连接（反弹 shell）
+		regexp.MustCompile(`(?i)\bnc\s+.*-[elp]`),
+		regexp.MustCompile(`(?i)\bncat\s+.*-[elp]`),
+		regexp.MustCompile(`(?i)\bsocat\s+.*exec`),
+	}
+
 	return &ShellExecTool{
-		BlockedCommands: []string{
-			"rm -rf /",
-			"mkfs",
-			"dd if=",
-			":(){ :|:& };:", // fork bomb
-			"shutdown",
-			"reboot",
-			"halt",
-		},
+		BlockedBinaries: blocked,
+		BlockedPatterns: patterns,
 	}
 }
 
 func (t *ShellExecTool) Name() string { return "shell_exec" }
 
 func (t *ShellExecTool) Description() string {
-	return "在受限 shell 环境中执行命令，返回标准输出和错误输出"
+	return "在受限 shell 环境中执行命令，返回标准输出和错误输出。危险操作会被安全策略拦截。"
 }
 
 func (t *ShellExecTool) Parameters() JSONSchema {
@@ -625,12 +758,18 @@ func (t *ShellExecTool) Execute(ctx context.Context, args map[string]interface{}
 		return Result{}, fmt.Errorf("parameter 'command' is required and must be a non-empty string")
 	}
 
-	// 检查是否包含被禁止的命令
-	if err := t.checkBlocked(command); err != nil {
+	// 多层安全检查
+	if err := t.validateCommand(command); err != nil {
 		return Result{}, err
 	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+
+	// 环境隔离：白名单过滤父进程环境变量，剔除敏感变量
+	cmd.Env = sanitizeEnv(os.Environ())
+
+	// 独立进程组：便于按进程组终止整个子进程树（与 code_run 一致）
+	cmd.SysProcAttr = resourceLimits()
 
 	// 设置工作目录
 	if wd, ok := args["working_dir"].(string); ok && wd != "" {
@@ -640,14 +779,18 @@ func (t *ShellExecTool) Execute(ctx context.Context, args map[string]interface{}
 		cmd.Dir = wd
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// 输出限制：防止内存耗尽
+	const maxOutput = 1 << 20 // 1MB
+	cmd.Stdout = &limitedWriter{limit: maxOutput}
+	cmd.Stderr = &limitedWriter{limit: maxOutput}
 
 	err := cmd.Run()
 
+	stdout := cmd.Stdout.(*limitedWriter).String()
+	stderr := cmd.Stderr.(*limitedWriter).String()
+
 	result := Result{
-		Output: stdout.String(),
+		Output: stdout,
 		Metadata: map[string]interface{}{
 			"command": command,
 			"exit_ok": err == nil,
@@ -655,26 +798,244 @@ func (t *ShellExecTool) Execute(ctx context.Context, args map[string]interface{}
 	}
 
 	if err != nil {
-		result.Error = stderr.String()
+		result.Error = stderr
 		if result.Error == "" {
 			result.Error = err.Error()
 		}
-	} else if stderr.Len() > 0 {
-		result.Metadata["stderr"] = stderr.String()
+	} else if stderr != "" {
+		result.Metadata["stderr"] = stderr
 	}
 
 	return result, nil
 }
 
-// checkBlocked 检查命令是否在黑名单中
-func (t *ShellExecTool) checkBlocked(command string) error {
-	lower := strings.ToLower(strings.TrimSpace(command))
-	for _, blocked := range t.BlockedCommands {
-		if strings.Contains(lower, strings.ToLower(blocked)) {
-			return fmt.Errorf("command is blocked for safety: contains %q", blocked)
+// validateCommand 对命令进行多层安全验证。
+func (t *ShellExecTool) validateCommand(command string) error {
+	// 第 1 层：正则模式匹配（最高优先级）
+	for _, re := range t.BlockedPatterns {
+		if re.MatchString(command) {
+			return fmt.Errorf("command blocked by security policy: matches dangerous pattern %q", re.String())
 		}
 	}
+
+	// 第 2 层：分段解析命令，检查每个段的首个二进制
+	segments := splitShellCommand(command)
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		binary := extractBinary(seg)
+		if binary == "" {
+			continue
+		}
+		// 去除路径前缀，只检查二进制名（大小写不敏感）
+		baseName := strings.ToLower(filepath.Base(binary))
+		if t.BlockedBinaries[baseName] {
+			return fmt.Errorf("command blocked: binary %q is not allowed", baseName)
+		}
+	}
+
 	return nil
+}
+
+// splitShellCommand 按 shell 操作符分割命令。
+// 支持: |, &&, ||, ;, `...`, $(...)
+func splitShellCommand(cmd string) []string {
+	var segments []string
+	var current strings.Builder
+	runes := []rune(cmd)
+	i := 0
+	for i < len(runes) {
+		ch := runes[i]
+
+		// 跳过引号内的内容
+		if ch == '"' || ch == '\'' {
+			quote := ch
+			current.WriteRune(ch)
+			i++
+			for i < len(runes) && runes[i] != quote {
+				current.WriteRune(runes[i])
+				i++
+			}
+			if i < len(runes) {
+				current.WriteRune(runes[i])
+			}
+			i++
+			continue
+		}
+
+		// $(...) 子命令
+		if ch == '$' && i+1 < len(runes) && runes[i+1] == '(' {
+			depth := 1
+			current.WriteRune(ch)
+			current.WriteRune(runes[i+1])
+			i += 2
+			for i < len(runes) && depth > 0 {
+				if runes[i] == '(' {
+					depth++
+				} else if runes[i] == ')' {
+					depth--
+				}
+				current.WriteRune(runes[i])
+				i++
+			}
+			continue
+		}
+
+		// `...` 子命令
+		if ch == '`' {
+			current.WriteRune(ch)
+			i++
+			for i < len(runes) && runes[i] != '`' {
+				current.WriteRune(runes[i])
+				i++
+			}
+			if i < len(runes) {
+				current.WriteRune(runes[i])
+			}
+			i++
+			continue
+		}
+
+		// 检查操作符
+		if ch == '|' {
+			segments = append(segments, current.String())
+			current.Reset()
+			i++
+			if i < len(runes) && runes[i] == '|' {
+				i++ // skip second |
+			}
+			continue
+		}
+		if ch == '&' && i+1 < len(runes) && runes[i+1] == '&' {
+			segments = append(segments, current.String())
+			current.Reset()
+			i += 2
+			continue
+		}
+		if ch == ';' {
+			segments = append(segments, current.String())
+			current.Reset()
+			i++
+			continue
+		}
+
+		current.WriteRune(ch)
+		i++
+	}
+	if current.Len() > 0 {
+		segments = append(segments, current.String())
+	}
+	return segments
+}
+
+// extractBinary 从命令段中提取第一个 token（二进制名称）。
+func extractBinary(segment string) string {
+	segment = strings.TrimSpace(segment)
+	if segment == "" {
+		return ""
+	}
+
+	// 跳过 env / nice / nohup / time 等前缀
+	skipPrefixes := []string{"env", "nice", "nohup", "time", "sudo", "stdbuf", "unbuffer"}
+	for {
+		fields := strings.Fields(segment)
+		if len(fields) == 0 {
+			return ""
+		}
+		first := strings.ToLower(fields[0])
+		skip := false
+		for _, p := range skipPrefixes {
+			if first == p {
+				segment = strings.Join(fields[1:], " ")
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			// 跳过 KEY=VALUE 形式的环境变量赋值（env 命令后常见）
+			if strings.Contains(fields[0], "=") {
+				segment = strings.Join(fields[1:], " ")
+				continue
+			}
+			return fields[0]
+		}
+	}
+}
+
+// sanitizeEnv 按白名单过滤环境变量：仅保留 PATH/HOME 等必要变量，
+// 剔除密钥等敏感变量，防止泄露给子进程。
+func sanitizeEnv(env []string) []string {
+	// 保留的安全环境变量
+	keepVars := map[string]bool{
+		"PATH":            true,
+		"HOME":            true,
+		"USER":            true,
+		"LANG":            true,
+		"LC_ALL":          true,
+		"LC_CTYPE":        true,
+		"TERM":            true,
+		"TMPDIR":          true,
+		"XDG_RUNTIME_DIR": true,
+		"XDG_CONFIG_HOME": true,
+		"XDG_DATA_HOME":   true,
+		"XDG_CACHE_HOME":  true,
+	}
+
+	var result []string
+	for _, e := range env {
+		key := e
+		if idx := strings.IndexByte(e, '='); idx >= 0 {
+			key = e[:idx]
+		}
+		if keepVars[key] {
+			result = append(result, e)
+		}
+	}
+
+	// PATH 继承自父进程环境（经上面的白名单保留）；
+	// 若父进程未设置 PATH，则补充安全的默认路径
+	hasPATH := false
+	for _, e := range result {
+		if strings.HasPrefix(e, "PATH=") {
+			hasPATH = true
+			break
+		}
+	}
+	if !hasPATH {
+		result = append(result, "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+	}
+
+	return result
+}
+
+// limitedWriter 限制写入量的 Writer，防止内存耗尽。
+type limitedWriter struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool // 是否已因超限截断（截断标记只追加一次）
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if w.truncated {
+		// 已截断：丢弃后续内容，不再重复追加截断标记
+		return len(p), nil
+	}
+	if w.buf.Len()+len(p) > w.limit {
+		remaining := w.limit - w.buf.Len()
+		if remaining > 0 {
+			w.buf.Write(p[:remaining])
+		}
+		w.buf.WriteString("\n... [output truncated]")
+		w.truncated = true
+		return len(p), nil
+	}
+	return w.buf.Write(p)
+}
+
+func (w *limitedWriter) String() string {
+	return w.buf.String()
 }
 
 // ============================================================
@@ -683,9 +1044,6 @@ func (t *ShellExecTool) checkBlocked(command string) error {
 
 // RegisterBuiltinTools 将所有内置工具注册到给定的注册中心
 func RegisterBuiltinTools(reg *Registry) {
-	// 网络搜索 - 只读，30 秒超时
-	reg.Register(&WebSearchTool{}, RiskReadOnly, 30*time.Second)
-
 	// 网页抓取 - 只读，30 秒超时
 	reg.Register(NewWebFetchTool(), RiskReadOnly, 30*time.Second)
 
@@ -700,4 +1058,9 @@ func RegisterBuiltinTools(reg *Registry) {
 
 	// Shell 命令 - 危险操作，30 秒超时
 	reg.Register(NewShellExecTool(), RiskDangerous, 30*time.Second)
+}
+
+// RegisterSearchTool 将搜索工具注册到注册中心（需要搜索后端依赖）。
+func RegisterSearchTool(reg *Registry, searcher Searcher) {
+	reg.Register(NewWebSearchTool(searcher), RiskReadOnly, 30*time.Second)
 }

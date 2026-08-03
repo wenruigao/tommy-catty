@@ -16,6 +16,24 @@ policies:
       notify_channel: security-alerts
       notify_severity: critical
 
+  # rm 的拦截已整体下沉到策略层（工具层只兜底绝对危险命令）。
+  # 本策略拦截 rm 递归强制删除的各种变体：合并旗标（-rf/-fr/-Rf）、
+  # 分离旗标（-r -f、-f -r，允许夹杂其他旗标）、长旗标（--recursive --force），
+  # 目标可以是 /、/*、~ 或引号包裹的路径；普通 rm file.txt / rm -f file 不受影响。
+  - id: block-rm-recursive-force
+    name: "拦截递归强制删除"
+    description: "拦截 rm -rf / rm -rf /* 等递归强制删除命令（含 -fr、-r -f、--recursive --force 等变体）"
+    priority: 1
+    enabled: true
+    when:
+      tool_names: [shell_exec, code_run]
+      pattern: '(?i)\brm\s+((-[a-z]+\s+)*-[a-z]*[rf][a-z]*[rf][a-z]*\b|(-[a-z]+\s+)*-[a-z]*r[a-z]*(\s+-[a-z]+)*\s+-[a-z]*f[a-z]*\b|(-[a-z]+\s+)*-[a-z]*f[a-z]*(\s+-[a-z]+)*\s+-[a-z]*r[a-z]*\b|--(recursive|force)[a-z]*(\s+--?[a-z]+)*\s+--(recursive|force)[a-z]*)'
+    then:
+      effect: deny
+      message: "检测到递归强制删除（rm -rf 类）操作，已拦截。如确需执行，请修改安全策略。"
+      notify_channel: security-alerts
+      notify_severity: critical
+
   - id: protect-secrets
     name: "敏感信息脱敏"
     description: "自动脱敏输出中的 API Key、密码等敏感信息"
@@ -30,26 +48,27 @@ policies:
 
   - id: cost-guard
     name: "费用上限保护"
-    description: "单次任务 Token 消耗超过设定上限时需用户确认"
+    description: "任务完成后 Token 消耗超过设定上限时记录警告（后续可扩展为执行中检查）"
     priority: 3
     enabled: true
     when:
+      action_type: [task_end]
       max_cost: 10.0
     then:
       effect: require_approval
-      message: "本次任务预计消耗超过 10 元，是否继续执行？"
+      message: "本次任务消耗超过上限，后续类似任务将触发确认。"
 
   - id: office-hours
-    name: "工作时间限制"
-    description: "非工作时间（09:00-18:00）禁止执行高危操作"
+    name: "工作时间高危操作限制"
+    description: "仅工作时间（09:00-18:00）允许执行高危操作，非工作时间禁止"
     priority: 4
     enabled: false
     when:
       tool_risk: ["3"]
-      time_range: "09:00-18:00"
+      time_range: "18:00-09:00"
     then:
       effect: deny
-      message: "当前为非工作时间，高危操作已禁止。"
+      message: "当前为非工作时间，高危操作已禁止。仅工作时间（09:00-18:00）允许。"
 
   - id: rate-limiter
     name: "调用频率限制"

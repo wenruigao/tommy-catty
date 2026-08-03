@@ -48,6 +48,59 @@ func TestParseReflection(t *testing.T) {
 	}
 }
 
+func TestParseReflection_MissingSatisfaction(t *testing.T) {
+	// JSON 解析成功但缺少 satisfaction 字段时，应使用默认值 0.8，
+	// 而不是零值 0.0（避免把"模型没给分"误判为极度不满意）
+	r := parseReflection(`{"issues": ["数据不全"], "adjustment": "revise"}`)
+	if r.Satisfaction != 0.8 {
+		t.Errorf("satisfaction 缺失时应为默认值 0.8，实际 %f", r.Satisfaction)
+	}
+	if r.Adjustment != "revise" {
+		t.Errorf("adjustment = %q, want revise", r.Adjustment)
+	}
+	if len(r.Issues) != 1 || r.Issues[0] != "数据不全" {
+		t.Errorf("issues 解析错误: %v", r.Issues)
+	}
+
+	// 空 JSON 对象同样视为 satisfaction 缺失
+	r = parseReflection(`{}`)
+	if r.Satisfaction != 0.8 {
+		t.Errorf("空 JSON 时 satisfaction 应为默认值 0.8，实际 %f", r.Satisfaction)
+	}
+	if r.Adjustment != "continue" {
+		t.Errorf("空 JSON 时 adjustment = %q, want continue", r.Adjustment)
+	}
+}
+
+func TestParseReflection_ValidJSON(t *testing.T) {
+	// JSON 解析成功且字段齐全：使用解析值
+	r := parseReflection(`前缀说明 {"satisfaction": 0.3, "issues": ["偏离目标"], "adjustment": "replan"} 后缀`)
+	if r.Satisfaction != 0.3 {
+		t.Errorf("satisfaction = %f, want 0.3", r.Satisfaction)
+	}
+	if r.Adjustment != "replan" {
+		t.Errorf("adjustment = %q, want replan", r.Adjustment)
+	}
+	if len(r.Issues) != 1 {
+		t.Errorf("issues = %v, want 1 条", r.Issues)
+	}
+
+	// 显式给 0 分时应尊重零值（与字段缺失区分）
+	r = parseReflection(`{"satisfaction": 0, "adjustment": "replan"}`)
+	if r.Satisfaction != 0.0 {
+		t.Errorf("显式 satisfaction=0 应为 0.0，实际 %f", r.Satisfaction)
+	}
+
+	// 越界 satisfaction 钳制到 0.5；非法 adjustment 回退为 continue
+	r = parseReflection(`{"satisfaction": 1.5, "adjustment": "unknown"}`)
+	if r.Satisfaction != 0.5 {
+		t.Errorf("越界 satisfaction 应钳制为 0.5，实际 %f", r.Satisfaction)
+	}
+	if r.Adjustment != "continue" {
+		t.Errorf("非法 adjustment 应回退为 continue，实际 %q", r.Adjustment)
+	}
+}
+
 func TestReplanState(t *testing.T) {
 	cfg := DefaultReflectionConfig()
 	rs := &ReplanState{}

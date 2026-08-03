@@ -35,6 +35,10 @@ type ClientConfig struct {
 	// 如设置为 "fs_"，则远程工具 "read_file" 注册为 "fs_read_file"
 	ToolPrefix string
 
+	// DefaultRiskLevel 工具风险等级（默认 L1 低写入）
+	// 可通过配置设置为更高风险等级以配合安全策略
+	DefaultRiskLevel int
+
 	// Timeout 请求超时
 	Timeout time.Duration
 }

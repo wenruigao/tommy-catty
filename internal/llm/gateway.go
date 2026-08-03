@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 )
@@ -266,26 +267,40 @@ func (g *Gateway) ChatStream(ctx context.Context, req ChatRequest) (<-chan Strea
 	return nil, fmt.Errorf("%w: %v", ErrAllProvidersFailed, err)
 }
 
-// resolveProvider 根据模型名称或默认配置解析目标供应商
+// resolveProvider 根据模型名称或默认配置解析目标供应商。
+// 匹配顺序：1) 供应商名称 2) 供应商配置的 model 名 3) 默认供应商 4) 唯一供应商
 func (g *Gateway) resolveProvider(model string) (LLMProvider, error) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	// 优先按供应商名称匹配
 	if model != "" {
+		// 1. 按供应商名称匹配（如 "mimo" 匹配 provider key "mimo"）
 		if p, ok := g.providers[model]; ok {
 			return p, nil
 		}
+
+		// 2. 按供应商配置的 model 名匹配（如 "mimo-v2.5-pro" 匹配 provider.Model()）
+		// 按供应商名排序遍历，避免 map 迭代顺序不定导致同名 model 路由结果随机
+		names := make([]string, 0, len(g.providers))
+		for name := range g.providers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if g.providers[name].Model() == model {
+				return g.providers[name], nil
+			}
+		}
 	}
 
-	// 使用默认供应商
+	// 3. 使用默认供应商
 	if g.defaultProvider != "" {
 		if p, ok := g.providers[g.defaultProvider]; ok {
 			return p, nil
 		}
 	}
 
-	// 如果只有一个供应商，直接使用
+	// 4. 如果只有一个供应商，直接使用
 	if len(g.providers) == 1 {
 		for _, p := range g.providers {
 			return p, nil
