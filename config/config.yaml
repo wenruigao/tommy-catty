@@ -1,7 +1,8 @@
 # Tommy-Cat Agent 配置文件
 #
 # 模型接入完全声明式：在 llm.providers 下添加任意数量的供应商即可。
-# 任何兼容 OpenAI Chat Completions API 的服务均可接入，无需修改代码。
+# 支持两种协议（protocol 字段选择）：OpenAI Chat Completions 兼容协议（默认）
+# 与 Anthropic Messages API（protocol: "anthropic"），无需修改代码。
 #
 # API Key 支持两种写法:
 #   直接写:   api_key: "sk-xxx"
@@ -78,6 +79,16 @@ llm:
     #   api_key: "lm-studio"
     #   model: "local-model"
     #   max_tokens: 8192
+
+    # anthropic (Claude 系列模型，使用 Anthropic Messages API 协议):
+    # anthropic:
+    #   protocol: "anthropic"
+    #   # base_url 可省略，默认 https://api.anthropic.com/v1/messages
+    #   # base_url: "https://api.anthropic.com/v1/messages"
+    #   api_key: "${ANTHROPIC_API_KEY}"
+    #   model: "claude-sonnet-4-5"
+    #   max_tokens: 200000
+    #   timeout: "120s"
 
     # 自定义供应商（任何 OpenAI 兼容 API）:
     # my-custom:

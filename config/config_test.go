@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -232,6 +233,70 @@ func TestToGatewayConfig_NoRetryConfig(t *testing.T) {
 	gwCfg := cfg.ToGatewayConfig()
 	if gwCfg.Retry != nil {
 		t.Error("Retry should be nil when not configured")
+	}
+}
+
+// ============================================================
+// protocol 字段测试（OpenAI / Anthropic 协议选择）
+// ============================================================
+
+func TestToGatewayConfig_Protocol(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			DefaultProvider: "claude",
+			Providers: map[string]ProviderEntry{
+				"claude": {
+					Protocol: "anthropic",
+					APIKey:   "sk-ant-test",
+					Model:    "claude-sonnet-4-5",
+				},
+				"deepseek": {BaseURL: "https://api.deepseek.com", Model: "deepseek-chat"},
+			},
+		},
+	}
+	cfg.applyDefaults()
+	gwCfg := cfg.ToGatewayConfig()
+
+	// protocol 应透传到 llm.ProviderConfig
+	if got := gwCfg.Providers["claude"].Protocol; got != "anthropic" {
+		t.Errorf("claude Protocol = %q, want anthropic", got)
+	}
+	// 未配置 protocol 时应为空（网关按默认 openai 处理）
+	if got := gwCfg.Providers["deepseek"].Protocol; got != "" {
+		t.Errorf("deepseek Protocol = %q, want 空（默认 openai）", got)
+	}
+}
+
+func TestValidate_InvalidProtocol(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Providers: map[string]ProviderEntry{
+				"bad": {Protocol: "gemini", BaseURL: "https://example.com", Model: "m"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("非法 protocol 应返回错误")
+	}
+	if !strings.Contains(err.Error(), "protocol") {
+		t.Errorf("错误信息 = %q, want 提及 protocol", err.Error())
+	}
+}
+
+func TestValidate_AnthropicWithoutBaseURL(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			DefaultProvider: "claude",
+			Providers: map[string]ProviderEntry{
+				// anthropic 协议允许省略 base_url（缺省使用官方端点）
+				"claude": {Protocol: "anthropic", APIKey: "k", Model: "claude-sonnet-4-5"},
+			},
+		},
+	}
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("anthropic 协议省略 base_url 应通过校验: %v", err)
 	}
 }
 

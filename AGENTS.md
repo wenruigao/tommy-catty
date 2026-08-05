@@ -9,7 +9,7 @@ Tommy-Cat Agent 是一个基于 Go 语言开发的通用任务智能体（AI Age
 - **模块路径**: `github.com/tommy-cat/agent`
 - **Go 版本**: go.mod 声明 `go 1.25.0`（README 中写 1.22+，以 go.mod 为准）
 - **外部依赖极少**: 直接依赖仅 `github.com/google/uuid` 和 `gopkg.in/yaml.v3`；`modernc.org/sqlite` 仅在测试中作为 sqlite 驱动使用
-- **LLM 协议**: OpenAI Chat Completions API（支持 tool calling），任何兼容服务均可通过 YAML 声明式接入，无需改代码
+- **LLM 协议**: 支持两种协议，经供应商配置的 `protocol` 字段选择——OpenAI Chat Completions 兼容协议（默认，支持 tool calling）与 Anthropic Messages API（`protocol: "anthropic"`，对应 `internal/llm/anthropic.go`），任何兼容服务均可通过 YAML 声明式接入，无需改代码
 - **主要语言约定**: 代码注释、文档、用户可见提示均使用中文，提交修改时应保持一致
 
 ### 两种运行模式
@@ -64,6 +64,7 @@ API Key 通过 `${ENV_VAR}` 语法在 `config/config.yaml` 中引用：
 - `MIMO_API_KEY`（当前默认供应商）
 - `DEEPSEEK_API_KEY`（当前降级供应商）
 - `DASHSCOPE_API_KEY`（qwen，可选）
+- `ANTHROPIC_API_KEY`（Anthropic Claude，可选，`protocol: "anthropic"` 时使用）
 - `TAVILY_API_KEY`（Tavily 搜索，可选；默认搜索引擎为 DuckDuckGo，无需 Key）
 - `AGENT_API_KEY`（HTTP 服务 `auth_mode: api_key` 时必填，客户端经 `X-API-Key` 头携带）
 - `AGENT_JWT_SECRET`（HTTP 服务 `auth_mode: jwt` 时必填，HS256 签名密钥）

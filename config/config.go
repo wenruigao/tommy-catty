@@ -141,6 +141,10 @@ type LLMConfig struct {
 // 保留此类型是因为 Timeout 字段使用 YAML 友好的 string（如 "120s"），
 // 而 llm.ProviderConfig 使用 time.Duration，需要转换。
 type ProviderEntry struct {
+	// Protocol 协议类型："openai"（默认，OpenAI Chat Completions 兼容协议）
+	// 或 "anthropic"（Anthropic Messages API）
+	Protocol string `yaml:"protocol"`
+
 	// BaseURL API 端点（OpenAI 兼容的 chat/completions 地址）
 	BaseURL string `yaml:"base_url"`
 
@@ -315,6 +319,7 @@ func (c *Config) ToGatewayConfig() llm.GatewayConfig {
 		}
 		providers[name] = llm.ProviderConfig{
 			Name:             name,
+			Protocol:         entry.Protocol,
 			BaseURL:          entry.BaseURL,
 			APIKey:           entry.APIKey,
 			Model:            entry.Model,
@@ -432,7 +437,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: no LLM providers configured")
 	}
 	for name, entry := range c.LLM.Providers {
-		if entry.BaseURL == "" {
+		// protocol 仅允许空（默认 openai）、openai 或 anthropic
+		if entry.Protocol != "" && entry.Protocol != "openai" && entry.Protocol != "anthropic" {
+			return fmt.Errorf("config: 供应商 %q 的 protocol 非法: %q（仅支持 openai / anthropic）", name, entry.Protocol)
+		}
+		// anthropic 协议允许省略 base_url（缺省使用官方端点）
+		if entry.BaseURL == "" && entry.Protocol != "anthropic" {
 			return fmt.Errorf("config: provider %q missing base_url", name)
 		}
 	}

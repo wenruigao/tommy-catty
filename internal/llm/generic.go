@@ -18,6 +18,10 @@ type ProviderConfig struct {
 	// Name 供应商唯一标识（用于路由和日志）
 	Name string
 
+	// Protocol 协议类型："openai"（默认，OpenAI Chat Completions 兼容协议）
+	// 或 "anthropic"（Anthropic Messages API）
+	Protocol string
+
 	// BaseURL API 端点地址（完整的 chat/completions 路径）
 	// 示例:
 	//   DeepSeek:  https://api.deepseek.com/chat/completions

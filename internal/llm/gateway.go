@@ -149,8 +149,12 @@ func NewGatewayFromConfig(cfg GatewayConfig) *Gateway {
 
 	for name, pcfg := range cfg.Providers {
 		pcfg.Name = name // 确保 name 字段一致
-		provider := NewGenericProvider(pcfg)
-		gw.Register(provider)
+		// 按协议类型选择供应商实现，默认 OpenAI 兼容协议
+		if pcfg.Protocol == "anthropic" {
+			gw.Register(NewAnthropicProvider(pcfg))
+		} else {
+			gw.Register(NewGenericProvider(pcfg))
+		}
 	}
 
 	gw.SetDefault(cfg.DefaultProvider)
