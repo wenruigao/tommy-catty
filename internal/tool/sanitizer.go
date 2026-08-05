@@ -90,7 +90,10 @@ func DetectInjection(text string) int {
 }
 
 // WrapToolOutput 将工具输出包裹在隔离标签中。
+// 注意：工具输出是不可信内容，若其中包含 "</tool_output" 会提前闭合隔离标签、
+// 逃逸出包裹边界（注入风险），因此先中和该序列再包裹。
 func WrapToolOutput(toolName string, output string) string {
+	output = strings.ReplaceAll(output, "</tool_output", "< /tool_output")
 	return "<tool_output source=\"" + toolName + "\">\n" + output + "\n</tool_output>"
 }
 

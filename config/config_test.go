@@ -363,3 +363,39 @@ func TestApplyDefaults_TraceExportPath(t *testing.T) {
 		t.Errorf("TraceExportPath 默认应为空（禁用导出），得到 %q", cfg.Engine.TraceExportPath)
 	}
 }
+
+// ============================================================
+// applyDefaults：Persona 人格体系默认值
+// ============================================================
+
+func TestApplyDefaults_Persona(t *testing.T) {
+	cfg := &Config{}
+	cfg.applyDefaults()
+
+	if cfg.Persona.AgentMDPath != "config/agent.md" {
+		t.Errorf("AgentMDPath = %q, want config/agent.md", cfg.Persona.AgentMDPath)
+	}
+	if cfg.Persona.SoulMDPath != "config/soul.md" {
+		t.Errorf("SoulMDPath = %q, want config/soul.md", cfg.Persona.SoulMDPath)
+	}
+	if cfg.Persona.UserProfilesDir != "data/users" {
+		t.Errorf("UserProfilesDir = %q, want data/users", cfg.Persona.UserProfilesDir)
+	}
+	if cfg.Persona.ProfileUpdateIntervalRuns != 3 {
+		t.Errorf("ProfileUpdateIntervalRuns = %d, want 3", cfg.Persona.ProfileUpdateIntervalRuns)
+	}
+}
+
+func TestApplyDefaults_PersonaKeepCustom(t *testing.T) {
+	cfg := &Config{}
+	cfg.Persona.AgentMDPath = "custom/agent.md"
+	cfg.Persona.ProfileUpdateIntervalRuns = 10
+	cfg.applyDefaults()
+
+	if cfg.Persona.AgentMDPath != "custom/agent.md" {
+		t.Errorf("自定义 AgentMDPath 不应被覆盖，得到 %q", cfg.Persona.AgentMDPath)
+	}
+	if cfg.Persona.ProfileUpdateIntervalRuns != 10 {
+		t.Errorf("自定义 ProfileUpdateIntervalRuns 不应被覆盖，得到 %d", cfg.Persona.ProfileUpdateIntervalRuns)
+	}
+}

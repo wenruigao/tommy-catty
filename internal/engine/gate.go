@@ -10,3 +10,11 @@ type ToolGate interface {
 	// toolName 为工具名，argsSummary 为工具参数的 JSON 摘要。
 	CheckToolCall(ctx context.Context, toolName, argsSummary string) error
 }
+
+// OutputGate 在最终答案返回前进行安全检查（如敏感信息脱敏、输出审查）。
+// 返回处理后的内容（可能被脱敏修改）；返回非 nil error 表示输出被拒绝。
+type OutputGate interface {
+	// CheckOutput 检查并可能修改输出内容。content 为原始输出，
+	// 返回值为实际对外输出的内容（脱敏后与原始内容可能不同）。
+	CheckOutput(ctx context.Context, content string) (string, error)
+}

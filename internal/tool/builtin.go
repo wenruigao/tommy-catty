@@ -1042,16 +1042,26 @@ func (w *limitedWriter) String() string {
 // RegisterBuiltinTools - 注册所有内置工具
 // ============================================================
 
-// RegisterBuiltinTools 将所有内置工具注册到给定的注册中心
-func RegisterBuiltinTools(reg *Registry) {
+// RegisterBuiltinTools 将所有内置工具注册到给定的注册中心。
+// workDir 非空时转换为绝对路径，作为 file_read / file_write 的 AllowedDirs
+// 目录白名单（即工作目录沙箱：只允许读写该目录内的文件）；
+// 为空字符串时不设置白名单，保持不限制的现状。
+func RegisterBuiltinTools(reg *Registry, workDir string) {
+	var allowedDirs []string
+	if workDir != "" {
+		if abs, err := filepath.Abs(workDir); err == nil {
+			allowedDirs = []string{abs}
+		}
+	}
+
 	// 网页抓取 - 只读，30 秒超时
 	reg.Register(NewWebFetchTool(), RiskReadOnly, 30*time.Second)
 
 	// 文件读取 - 只读，15 秒超时
-	reg.Register(&FileReadTool{}, RiskReadOnly, 15*time.Second)
+	reg.Register(&FileReadTool{AllowedDirs: allowedDirs}, RiskReadOnly, 15*time.Second)
 
 	// 文件写入 - 高风险写操作，15 秒超时
-	reg.Register(&FileWriteTool{}, RiskHighWrite, 15*time.Second)
+	reg.Register(&FileWriteTool{AllowedDirs: allowedDirs}, RiskHighWrite, 15*time.Second)
 
 	// 代码执行 - 危险操作，30 秒超时
 	reg.Register(&CodeRunTool{}, RiskDangerous, 30*time.Second)

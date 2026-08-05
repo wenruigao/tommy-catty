@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tommy-cat/agent/internal/tool"
 )
@@ -36,13 +37,38 @@ func (a *MCPToolAdapter) Name() string {
 	return a.fullName
 }
 
-// Description 返回工具描述（标注来源为 MCP）
+// maxDescriptionLen 远程工具描述的最大长度（字符数）。
+// 远程 server 提供的 description 会进入 LLM 上下文，超长描述既浪费 token
+// 也可能藏匿注入内容，因此统一截断。
+const maxDescriptionLen = 500
+
+// Description 返回工具描述（标注来源为 MCP）。
+// 远程 server 是不可信来源：其提供的 description 会原样进入 LLM 上下文，
+// 存在提示注入风险，因此此处做最小防护——剥离控制字符（保留换行/制表符）
+// 并截断到 maxDescriptionLen。
 func (a *MCPToolAdapter) Description() string {
 	desc := a.definition.Description
 	if desc == "" {
 		desc = fmt.Sprintf("MCP tool from %s", a.client.cfg.Name)
 	}
-	return desc
+	return sanitizeDescription(desc)
+}
+
+// sanitizeDescription 剥离字符串中的控制字符（保留换行 \n 与制表符 \t），
+// 并截断到 maxDescriptionLen 个字符。
+func sanitizeDescription(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			b.WriteRune(r)
+		}
+	}
+	runes := []rune(b.String())
+	if len(runes) > maxDescriptionLen {
+		return string(runes[:maxDescriptionLen]) + "..."
+	}
+	return string(runes)
 }
 
 // Parameters 将 MCP 的 inputSchema 转换为本地 JSONSchema

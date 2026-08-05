@@ -3,8 +3,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -48,7 +51,7 @@ func main() {
 
 	// 初始化工具注册表
 	registry := tool.NewRegistry()
-	tool.RegisterBuiltinTools(registry)
+	tool.RegisterBuiltinTools(registry, cfg.WorkDir)
 
 	// 初始化搜索工具
 	searchMgr := search.NewManager(cfg.Search)
@@ -89,6 +92,16 @@ func main() {
 		log.Printf("警告: 工具 %q 需要人工审批，HTTP 模式无法交互，已自动拒绝（%s）", toolName, reason)
 		return false
 	})
+	// 透传工具风险等级，使按 tool_risk 匹配的策略能够命中
+	toolGate.SetRiskLookup(func(toolName string) int {
+		if meta, ok := registry.Get(toolName); ok {
+			return int(meta.RiskLevel)
+		}
+		return 0
+	})
+
+	// 最终输出安全门禁（敏感信息脱敏、输出审查）
+	outputGate := session.NewOutputGateAdapter(secEngine)
 
 	// 初始化 Skill 系统
 	_ = skill.NewStore(cfg.SkillStorePath)
@@ -109,26 +122,51 @@ func main() {
 	// 构建 SessionManager
 	systemPrompt := cfg.Engine.SystemPrompt
 	if systemPrompt == "" {
-		systemPrompt = `你是 Tommy-Cat，一个通用任务智能体。你可以通过工具调用来完成用户的任务。
-执行任务时遵循 ReAct 模式：思考(Thought) -> 行动(Action) -> 观察(Observation) -> 循环。
-当任务完成时，直接输出最终答案，不再调用工具。
-回答使用中文，保持简洁专业。`
+		systemPrompt = session.DefaultBasePrompt
 	}
 
 	llmAdp := &llmAdapter{gateway: gateway}
 	summarizer := ctxmgr.NewLLMSummarizer(llmAdp.Chat)
 
+	// 加载 Agent 人格文件（缺失时使用内置兜底文本并警告）
+	agentMD, err := session.LoadPersonaFile(cfg.Persona.AgentMDPath, session.DefaultAgentMD)
+	if err != nil {
+		fmt.Printf("  ⚠️  %v\n", err)
+	}
+	soulMD, err := session.LoadPersonaFile(cfg.Persona.SoulMDPath, session.DefaultSoulMD)
+	if err != nil {
+		fmt.Printf("  ⚠️  %v\n", err)
+	}
+
+	// 用户画像生成器（每完成 N 次任务用 LLM 更新 user.md，失败静默）
+	profiler := session.NewUserProfiler(
+		cfg.Persona.UserProfilesDir,
+		cfg.Persona.ProfileUpdateIntervalRuns,
+		func(ctx context.Context, messages []llm.Message) (string, error) {
+			resp, err := llmAdp.Chat(ctx, messages, nil)
+			if err != nil {
+				return "", err
+			}
+			return resp.Content, nil
+		},
+	)
+
 	deps := session.SessionDeps{
-		LLM:           llmAdp,
-		Tools:         registry,
-		MaxIterations: cfg.Engine.MaxIterations,
-		SystemPrompt:  systemPrompt,
-		MemorySize:    cfg.Session.MemorySize,
-		CtxConfig:     ctxmgr.DefaultConfig(),
-		Summarizer:    summarizer,
-		Reflection:    cfg.Engine.Reflection.ToReflectionConfig(),
-		ToolGate:      toolGate,
-		TraceExporter: traceExporter,
+		LLM:             llmAdp,
+		Tools:           registry,
+		MaxIterations:   cfg.Engine.MaxIterations,
+		SystemPrompt:    systemPrompt,
+		MemorySize:      cfg.Session.MemorySize,
+		CtxConfig:       ctxmgr.DefaultConfig(),
+		Summarizer:      summarizer,
+		Reflection:      cfg.Engine.Reflection.ToReflectionConfig(),
+		ToolGate:        toolGate,
+		OutputGate:      outputGate,
+		TraceExporter:   traceExporter,
+		AgentMD:         agentMD,
+		SoulMD:          soulMD,
+		UserProfilesDir: cfg.Persona.UserProfilesDir,
+		Profiler:        profiler,
 		RateLimit: session.RateLimitConfig{
 			RequestsPerMinute: cfg.Session.RequestsPerMinute,
 		},
@@ -160,11 +198,14 @@ func main() {
 		JWTSecret: cfg.Server.AuthJWTSecret,
 	})(mux)
 
+	// chat 请求进入 handler 前做 task_start 策略评估（deny 直接返回 400）
+	guarded := taskStartGuard(secEngine, authed)
+
 	// HTTP 服务
 	addr := cfg.Server.Addr
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      authed,
+		Handler:      guarded,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second, // Agent 执行可能较长
 		IdleTimeout:  120 * time.Second,
@@ -190,6 +231,42 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("  👋 服务已停止")
+}
+
+// taskStartGuard 在 chat 请求进入 handler 前做 task_start 安全策略评估：
+// 命中 deny 策略时直接返回 400 中文错误，不再进入会话执行；
+// 其他情况原样放行（请求体读完后会重新装回）。
+func taskStartGuard(secEngine *security.Engine, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/chat" {
+			body, err := io.ReadAll(r.Body)
+			if err == nil {
+				var req struct {
+					Message string `json:"message"`
+				}
+				if json.Unmarshal(body, &req) == nil && req.Message != "" {
+					decisions := secEngine.Evaluate(security.Checkpoint{
+						Type:      "task_start",
+						Content:   req.Message,
+						Timestamp: time.Now(),
+					})
+					for _, d := range decisions {
+						if d.Effect == security.EffectDeny {
+							w.Header().Set("Content-Type", "application/json; charset=utf-8")
+							w.WriteHeader(http.StatusBadRequest)
+							_ = json.NewEncoder(w).Encode(map[string]string{
+								"error": fmt.Sprintf("请求被安全策略拦截 [%s]: %s", d.PolicyID, d.Message),
+							})
+							return
+						}
+					}
+				}
+				// 重新装回请求体，交给后续 handler 正常解析
+				r.Body = io.NopCloser(bytes.NewReader(body))
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // llmAdapter 将 llm.Gateway 适配为 engine.LLMClient 接口

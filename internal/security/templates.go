@@ -2,7 +2,7 @@
 package security
 
 // DefaultPolicies 返回内置的默认安全策略列表
-// 包含 8 条常用安全策略，覆盖破坏性操作拦截、敏感信息保护、成本控制等场景
+// 包含 9 条常用安全策略，覆盖破坏性操作拦截、敏感信息保护、成本控制、提示注入防护等场景
 func DefaultPolicies() []Policy {
 	return []Policy{
 		// 1. 拦截破坏性操作：禁止执行 rm -rf、DROP TABLE 等危险命令。
@@ -25,7 +25,9 @@ func DefaultPolicies() []Policy {
 				NotifySeverity: "critical",
 			},
 		},
-		// 2. 保护敏感信息：对输出中的 API Key、密码等敏感内容进行脱敏
+		// 2. 保护敏感信息：对输出中的 API Key、密码等敏感内容进行脱敏。
+		// 覆盖两类形式：sk- 开头的裸密钥（如 sk-xxxxxxxxxxxxxxxxxxxx），
+		// 以及 "key: value" / "key=value" 形式的敏感字段。
 		{
 			ID:          "protect-secrets",
 			Name:        "保护敏感信息",
@@ -34,7 +36,7 @@ func DefaultPolicies() []Policy {
 			Enabled:     true,
 			When: PolicyCondition{
 				ActionType: []string{"tool_return", "llm_output"},
-				Pattern:    `(?i)(api[_-]?key|password|secret|token|credential|private[_-]?key)\s*[:=]\s*\S+`,
+				Pattern:    `(?i)(sk-[a-zA-Z0-9]{20,}|(api[_-]?key|password|secret|token|credential|private[_-]?key)\s*[:=]\s*\S+)`,
 			},
 			Then: PolicyAction{
 				Effect:         EffectRedact,
@@ -109,7 +111,10 @@ func DefaultPolicies() []Policy {
 				NotifySeverity: "critical",
 			},
 		},
-		// 7. 作用域围栏：禁止在工作目录外进行文件操作
+		// 7. 作用域围栏：禁止在工作目录外进行文件操作。
+		// 仅匹配实际存在的 file_read / file_write 工具；pattern 与
+		// config/policy.yaml 中的 scope-fence 写法保持一致（RE2 不支持
+		// 负向先行断言 (?!...)，旧写法会导致正则编译失败、策略永不命中）。
 		{
 			ID:          "scope-fence",
 			Name:        "作用域围栏",
@@ -117,8 +122,8 @@ func DefaultPolicies() []Policy {
 			Priority:    7,
 			Enabled:     true,
 			When: PolicyCondition{
-				ToolNames: []string{"file_read", "file_write", "file_delete"},
-				Pattern:   `(?i)(/etc/|/root/|/home/(?!workspace)|C:\\Windows|C:\\Users\\(?!workspace))`,
+				ToolNames: []string{"file_read", "file_write"},
+				Pattern:   `(/etc/|/usr/|/System/|/var/|~/.ssh)`,
 			},
 			Then: PolicyAction{
 				Effect:         EffectDeny,
@@ -142,6 +147,30 @@ func DefaultPolicies() []Policy {
 				Effect:         EffectRequireApproval,
 				Message:        "输出内容超过5000字符，需要人工审查",
 				NotifySeverity: "info",
+			},
+		},
+		// 9. 提示注入防护：在任务开始时检测输入中的明确指令注入短语。
+		// 与 internal/tool/sanitizer.go 的注入特征同源，但只收录明确的注入指令
+		// 短语（ignore/disregard/forget previous instructions、忽略/无视之前的指令等），
+		// 不收录 "system prompt"、"你现在是" 这类容易误伤正常请求的宽泛特征。
+		{
+			ID:          "prompt-injection",
+			Name:        "提示注入防护",
+			Description: "检测任务输入中的提示注入短语（如 ignore previous instructions、忽略之前的指令），命中即拒绝",
+			Priority:    10,
+			Enabled:     true,
+			When: PolicyCondition{
+				ActionType: []string{"task_start"},
+				Pattern: `(?i)(ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)` +
+					`|disregard\s+(all\s+)?(previous|prior|above)` +
+					`|forget\s+(everything|all|your)\s+(above|previous|instructions)` +
+					`|忽略(之前|以上|上面)的(指令|规则|提示)` +
+					`|无视(之前|以上)的(要求|设定))`,
+			},
+			Then: PolicyAction{
+				Effect:         EffectDeny,
+				Message:        "检测到提示注入尝试，已拒绝执行",
+				NotifySeverity: "critical",
 			},
 		},
 	}

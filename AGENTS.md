@@ -77,10 +77,12 @@ config/
   config.go           配置加载与解析（支持 ${ENV_VAR} 展开）
   config.yaml         主配置：LLM 供应商、引擎、搜索、数据库、知识库
   policy.yaml         安全策略（声明式 YAML）
+  agent.md            Agent 职责与权限边界（最高优先级，注入系统提示词）
+  soul.md             Agent 人格与对话风格（注入系统提示词）
 internal/
-  engine/             ReAct 执行引擎（执行追踪、反思机制、ToolGate 工具调用门禁）
+  engine/             ReAct 执行引擎（执行追踪、反思机制、ToolGate 工具调用门禁、OutputGate 输出门禁）
   llm/                LLM 网关：通用 Provider、重试（指数退避+抖动）、熔断器、缓存、计量
-  session/            多用户会话隔离：每用户独立 Engine/Memory/CtxManager/Tracer，带限流与 TTL
+  session/            多用户会话隔离：每用户独立 Engine/Memory/CtxManager/Tracer，带限流与 TTL；含 ToolGate/OutputGate 适配、persona 组装（persona.go）与 user.md 画像生成（profiler.go）
   tool/               工具接口、注册表与内置工具
     dbquery/          数据库只读查询工具（连接池、SQL 校验、结果缓存、格式化）
     kbtools/          知识库工具（kb_search / kb_read / kb_list）
@@ -123,10 +125,12 @@ bin/                  构建产物
 
 ## 安全注意事项
 
-- **安全策略引擎**: 策略定义于 `config/policy.yaml`，按 `priority` 升序评估。效果类型：`deny`（拦截）、`require_approval`（需确认）、`redact`（脱敏）、`throttle`（限流）、`allow`（放行）。内置模板见 `internal/security/templates.go`，默认拦截 `rm -rf`、`DROP TABLE` 等破坏性操作，并对输出中的 API Key / 密码自动脱敏。
+- **安全策略引擎**: 策略定义于 `config/policy.yaml`，按 `priority` 升序评估。效果类型：`deny`（拦截）、`require_approval`（需确认）、`redact`（脱敏）、`throttle`（限流，每会话令牌桶 30 次/分钟）、`allow`（放行）。内置模板见 `internal/security/templates.go`（9 条，含 task_start 提示注入拦截），默认拦截 `rm -rf`、`DROP TABLE` 等破坏性操作；输出中的 API Key / 密码经 OutputGate（llm_output 检查点 + `Engine.Redact`）自动脱敏。
+- **间接注入防线**: 不可信工具输出（web_search/web_fetch/kb_*/MCP 工具）经 `internal/tool/sanitizer.go` 清洗（script 剥离、注入模式打标）并以 `<tool_output>` 隔离标签包裹后进入上下文；system prompt（含 agent.md）中声明外部内容仅为数据。
+- **persona 体系**: `config/agent.md`（职责与权限边界，最高优先级）+ `config/soul.md`（人格风格）经 `SystemPromptProvider` 组装进系统提示词；`data/users/{userID}/user.md` 为每用户画像，由 UserProfiler 每 N 次任务（默认 3，`persona.profile_update_interval_runs`）经 LLM 总结生成。
 - **db_query 多重防御**: 仅放行 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH，含语句白名单、危险模式拦截、表名白名单、列黑名单、LIMIT 注入、结果行数硬上限。注意：go.mod 中只有 `modernc.org/sqlite`（且仅测试导入），mysql/postgres 驱动未引入，生产使用需在相应构建中注册驱动。
 - **子进程隔离**: shell_exec / code_run 通过 `Setpgid` 创建独立进程组，便于超时时按组终止整个子进程树（并非 rlimit 资源限制，内存/CPU 无硬性限额）。
-- **工作目录沙箱**: `work_dir` 配置限定文件操作范围。
+- **工作目录沙箱**: `work_dir` 配置作为 `file_read`/`file_write` 的 `AllowedDirs`（`RegisterBuiltinTools(reg, workDir)` 接线），目录外路径与独立 `..` 路径段均被拒绝。
 - **HTTP 认证**: `auth_mode` 支持 `header`（内网信任 `X-User-ID`）、`api_key`（校验 `X-API-Key`，密钥必须配置，为空拒绝启动）、`jwt`（HS256 签名校验，`auth_jwt_secret` 必填，取 `sub` 作为 userID，校验 `exp`）。
 - **工具调用门禁**: 引擎在每次工具执行前经 `engine.ToolGate` 接口做策略检查（`internal/session/gate.go` 适配 security 引擎）：`deny` 直接拦截并把原因反馈给 LLM；`require_approval` 走审批回调——CLI 交互式询问（y/N），HTTP 模式自动拒绝并记日志。`rm -rf` 等破坏性命令的裁决在策略层（policy.yaml + 内置模板），工具层黑名单只兜底 fork bomb、写设备等绝对危险命令，`rm file.txt` 等常规用法不受影响。
 - **不要提交密钥**: API Key 一律用 `${ENV_VAR}` 引用，禁止硬编码到 `config.yaml`。
@@ -151,6 +155,6 @@ bin/                  构建产物
 ## 其他说明
 
 - 项目根目录有两份中文 Word 文档（`AI_Agent_技术方案.docx`、`Tommy-Cat_Agent_使用手册.docx`），包含更详细的设计与使用说明。
-- `data/skills.json` 为运行时生成文件，不要手工编辑。
+- `data/skills.json` 与 `data/users/`（每用户 user.md 画像）为运行时生成内容，不要手工编辑（user.md 允许用户手工修改，profiler 更新时会保留仍有效的旧偏好）。
 - 无 Makefile、无 lint 配置文件——构建测试均直接使用 `go` 命令。CI 配置为 `.github/workflows/ci.yml`（gofmt 检查、vet、test、linux/darwin 交叉编译）。
 - `go` 工具链若不在 PATH，可尝试 `~/local/go/bin/go` 或 `~/go-sdk/go/bin/go`（本机已验证 go 1.25 工具链可正常构建并通过全部测试）。

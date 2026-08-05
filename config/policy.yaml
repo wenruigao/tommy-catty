@@ -103,3 +103,21 @@ policies:
     then:
       effect: require_approval
       message: "输出内容较长（>5000字），建议人工审查后发布。"
+
+  # 提示注入防护：在任务开始时检测输入中的明确指令注入短语。
+  # 只收录明确的注入指令（ignore/disregard/forget previous instructions、
+  # 忽略/无视之前的指令等），避免误伤正常请求。
+  # 如需关闭（例如安全研究、红队测试场景），将 enabled 改为 false 即可。
+  - id: prompt-injection
+    name: "提示注入防护"
+    description: "检测任务输入中的提示注入短语（如 ignore previous instructions、忽略之前的指令），命中即拒绝；可在本配置中禁用"
+    priority: 10
+    enabled: true
+    when:
+      action_type: [task_start]
+      pattern: "(?i)(ignore\\s+(all\\s+)?(previous|prior|above)\\s+(instructions|prompts|rules)|disregard\\s+(all\\s+)?(previous|prior|above)|forget\\s+(everything|all|your)\\s+(above|previous|instructions)|忽略(之前|以上|上面)的(指令|规则|提示)|无视(之前|以上)的(要求|设定))"
+    then:
+      effect: deny
+      message: "检测到提示注入尝试，已拒绝执行。如属误判，可在 config/policy.yaml 中禁用 prompt-injection 策略。"
+      notify_channel: security-alerts
+      notify_severity: critical

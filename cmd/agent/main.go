@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -48,7 +49,7 @@ func main() {
 
 	// 初始化工具注册表
 	registry := tool.NewRegistry()
-	tool.RegisterBuiltinTools(registry)
+	tool.RegisterBuiltinTools(registry, cfg.WorkDir)
 
 	// 初始化搜索工具
 	searchMgr := search.NewManager(cfg.Search)
@@ -80,6 +81,16 @@ func main() {
 
 	// 工具调用安全门禁（策略评估 + 终端交互式审批）
 	toolGate := session.NewToolGateAdapter(secEngine, interactiveApprover)
+	// 透传工具风险等级，使按 tool_risk 匹配的策略能够命中
+	toolGate.SetRiskLookup(func(toolName string) int {
+		if meta, ok := registry.Get(toolName); ok {
+			return int(meta.RiskLevel)
+		}
+		return 0
+	})
+
+	// 最终输出安全门禁（敏感信息脱敏、输出审查）
+	outputGate := session.NewOutputGateAdapter(secEngine)
 
 	// 初始化 Skill 系统
 	skillStore := skill.NewStore(cfg.SkillStorePath)
@@ -107,18 +118,54 @@ func main() {
 	// 初始化摘要生成器（用于上下文压缩）
 	summarizer := ctxmgr.NewLLMSummarizer(llmAdapter.Chat)
 
+	// 加载 Agent 人格文件（缺失时使用内置兜底文本并警告）
+	agentMD, err := session.LoadPersonaFile(cfg.Persona.AgentMDPath, session.DefaultAgentMD)
+	if err != nil {
+		fmt.Printf("  ⚠️  %v\n", err)
+	}
+	soulMD, err := session.LoadPersonaFile(cfg.Persona.SoulMDPath, session.DefaultSoulMD)
+	if err != nil {
+		fmt.Printf("  ⚠️  %v\n", err)
+	}
+
+	// 用户画像生成器（每完成 N 次任务用 LLM 更新 user.md，失败静默）
+	profiler := session.NewUserProfiler(
+		cfg.Persona.UserProfilesDir,
+		cfg.Persona.ProfileUpdateIntervalRuns,
+		func(ctx context.Context, messages []llm.Message) (string, error) {
+			resp, err := llmAdapter.Chat(ctx, messages, nil)
+			if err != nil {
+				return "", err
+			}
+			return resp.Content, nil
+		},
+	)
+
 	// 初始化 SessionManager（统一管理用户会话）
 	deps := session.SessionDeps{
-		LLM:           llmAdapter,
-		Tools:         registry,
-		MaxIterations: cfg.Engine.MaxIterations,
-		SystemPrompt:  buildSystemPrompt(cfg),
-		MemorySize:    cfg.Session.MemorySize,
-		CtxConfig:     ctxmgr.DefaultConfig(),
-		Summarizer:    summarizer,
-		Reflection:    cfg.Engine.Reflection.ToReflectionConfig(),
-		ToolGate:      toolGate,
-		TraceExporter: traceExporter,
+		LLM:             llmAdapter,
+		Tools:           registry,
+		MaxIterations:   cfg.Engine.MaxIterations,
+		SystemPrompt:    buildSystemPrompt(cfg),
+		MemorySize:      cfg.Session.MemorySize,
+		CtxConfig:       ctxmgr.DefaultConfig(),
+		Summarizer:      summarizer,
+		Reflection:      cfg.Engine.Reflection.ToReflectionConfig(),
+		ToolGate:        toolGate,
+		OutputGate:      outputGate,
+		TraceExporter:   traceExporter,
+		AgentMD:         agentMD,
+		SoulMD:          soulMD,
+		UserProfilesDir: cfg.Persona.UserProfilesDir,
+		Profiler:        profiler,
+		// Skill 匹配：命中时将已验证的执行经验拼接到目标之前
+		SkillHintProvider: func(input string) string {
+			if matched, score := skillMatcher.Match(input); matched != nil && score > 0.6 {
+				fmt.Printf("  💡 匹配到 Skill「%s」(置信度 %.0f%%)，将参考其执行流程\n", matched.Name, score*100)
+				return "可参考以下已验证的执行经验：\n" + matched.PromptHints
+			}
+			return ""
+		},
 		RateLimit: session.RateLimitConfig{
 			RequestsPerMinute: cfg.Session.RequestsPerMinute,
 		},
@@ -179,12 +226,7 @@ func main() {
 			continue
 		}
 
-		// Skill 匹配
-		if matched, score := skillMatcher.Match(input); matched != nil && score > 0.6 {
-			fmt.Printf("  💡 匹配到 Skill「%s」(置信度 %.0f%%)，将参考其执行流程\n", matched.Name, score*100)
-		}
-
-		// 执行任务（通过 session 串行）
+		// 执行任务（通过 session 串行，Skill 匹配提示由 SkillHintProvider 注入）
 		fmt.Println("  ⏳ 正在执行...")
 		result, err := localSession.Run(ctx, input)
 		if err != nil {
@@ -264,10 +306,7 @@ func buildSystemPrompt(cfg *config.Config) string {
 	if cfg.Engine.SystemPrompt != "" {
 		return cfg.Engine.SystemPrompt
 	}
-	return `你是 Tommy-Cat，一个通用任务智能体。你可以通过工具调用来完成用户的任务。
-执行任务时遵循 ReAct 模式：思考(Thought) -> 行动(Action) -> 观察(Observation) -> 循环。
-当任务完成时，直接输出最终答案，不再调用工具。
-回答使用中文，保持简洁专业。`
+	return session.DefaultBasePrompt
 }
 
 // handleCommand 处理斜杠命令
@@ -358,12 +397,78 @@ func checkDecisions(decisions []security.Decision) bool {
 	return false
 }
 
+// skillTraceData 与 internal/skill 的 traceData 结构对应的 JSON 结构，
+// 用于把引擎执行追踪序列化为 Skill 生成器可解析的格式。
+type skillTraceData struct {
+	TraceID     string           `json:"trace_id"`
+	TaskSummary string           `json:"task_summary"`
+	Steps       []skillTraceStep `json:"steps"`
+	Tools       []string         `json:"tools"`
+}
+
+// skillTraceStep 与 internal/skill 的 traceStep 结构对应。
+type skillTraceStep struct {
+	Order    int    `json:"order"`
+	Action   string `json:"action"`
+	ToolName string `json:"tool_name"`
+	Input    string `json:"input"`
+	Output   string `json:"output"`
+	Success  bool   `json:"success"`
+}
+
+// buildTraceJSON 把引擎执行追踪转换为 Skill 生成器期望的 JSON。
+// 转换失败时返回错误（调用方静默忽略即可）。
+func buildTraceJSON(result *engine.ExecutionTrace) (string, error) {
+	data := skillTraceData{
+		TraceID:     result.TaskID,
+		TaskSummary: result.Goal,
+	}
+	toolSet := make(map[string]bool)
+	for i, step := range result.Steps {
+		ts := skillTraceStep{Order: i + 1, Success: true}
+		switch {
+		case step.Action != "":
+			ts.Action = "call_tool"
+			ts.ToolName = step.Action
+			if input, err := json.Marshal(step.ActionInput); err == nil {
+				ts.Input = string(input)
+			}
+			ts.Output = step.Observation
+			// 执行错误/调用被拦截的步骤标记为失败
+			if strings.HasPrefix(step.Observation, "工具执行错误") ||
+				strings.HasPrefix(step.Observation, "工具调用失败") ||
+				strings.HasPrefix(step.Observation, "调用被拦截") {
+				ts.Success = false
+			}
+			toolSet[step.Action] = true
+		case step.IsFinal:
+			ts.Action = "final_answer"
+			ts.Output = step.FinalAnswer
+		default:
+			ts.Action = "think"
+			ts.Output = step.Thought
+		}
+		data.Steps = append(data.Steps, ts)
+	}
+	for name := range toolSet {
+		data.Tools = append(data.Tools, name)
+	}
+	out, err := json.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // tryGenerateSkill 尝试从执行结果自动生成 Skill
 func tryGenerateSkill(gen *skill.Generator, result *engine.ExecutionTrace) {
 	if len(result.Steps) < 3 {
 		return
 	}
-	traceJSON := fmt.Sprintf(`{"goal":"%s","steps":%d,"tools_used":true}`, result.Goal, len(result.Steps))
+	traceJSON, err := buildTraceJSON(result)
+	if err != nil {
+		return
+	}
 	s, err := gen.GenerateFromTrace(traceJSON)
 	if err != nil {
 		return

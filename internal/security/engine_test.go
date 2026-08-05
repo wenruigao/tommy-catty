@@ -1,6 +1,7 @@
 package security
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -424,8 +425,8 @@ policies:
 
 func TestDefaultPolicies_Count(t *testing.T) {
 	policies := DefaultPolicies()
-	if len(policies) != 8 {
-		t.Errorf("DefaultPolicies should return 8 policies, got %d", len(policies))
+	if len(policies) != 9 {
+		t.Errorf("DefaultPolicies should return 9 policies, got %d", len(policies))
 	}
 }
 
@@ -442,5 +443,85 @@ func TestDefaultPolicies_AllEnabled(t *testing.T) {
 		if !p.Enabled {
 			t.Errorf("default policy %s should be enabled", p.ID)
 		}
+	}
+}
+
+// ============================================================
+// Redact tests
+// ============================================================
+
+// TestRedact_ProtectSecretsSkKey 验证 protect-secrets 模板能对 sk- 开头的裸密钥脱敏。
+func TestRedact_ProtectSecretsSkKey(t *testing.T) {
+	e := newDefaultEngine()
+	content := "调用失败，使用的密钥是 sk-abcdefghijklmnopqrstuvwxyz123456 请检查"
+	redacted := e.Redact(content)
+	if strings.Contains(redacted, "sk-abcdefghijklmnopqrstuvwxyz123456") {
+		t.Errorf("sk- 密钥应被脱敏，结果: %q", redacted)
+	}
+	if !strings.Contains(redacted, "***") {
+		t.Errorf("脱敏结果应包含 *** 占位符，结果: %q", redacted)
+	}
+	if !strings.Contains(redacted, "调用失败") {
+		t.Errorf("非敏感内容应保持不变，结果: %q", redacted)
+	}
+}
+
+// TestRedact_KeyValueForm 验证 key: value 形式的敏感字段被脱敏。
+func TestRedact_KeyValueForm(t *testing.T) {
+	e := newDefaultEngine()
+	content := "配置为 api_key: abc123xyz 其余内容不变"
+	redacted := e.Redact(content)
+	if strings.Contains(redacted, "abc123xyz") {
+		t.Errorf("api_key 值应被脱敏，结果: %q", redacted)
+	}
+	if !strings.Contains(redacted, "其余内容不变") {
+		t.Errorf("非敏感内容应保持不变，结果: %q", redacted)
+	}
+}
+
+// TestRedact_NoSensitiveContent 验证无敏感内容时原样返回。
+func TestRedact_NoSensitiveContent(t *testing.T) {
+	e := newDefaultEngine()
+	content := "这是一段普通的输出内容，没有任何敏感信息。"
+	if got := e.Redact(content); got != content {
+		t.Errorf("普通内容不应被修改，got %q", got)
+	}
+}
+
+// TestRedact_SkipsNonRedactAndDisabledPolicies 验证 Redact 只处理 enabled 且
+// effect=redact 的策略：disabled 的 redact 策略与无 pattern 的 redact 策略均被跳过。
+func TestRedact_SkipsNonRedactAndDisabledPolicies(t *testing.T) {
+	e := NewEngine()
+	e.AddPolicy(Policy{
+		ID:      "disabled-redact",
+		Enabled: false,
+		When:    PolicyCondition{Pattern: "secret-word"},
+		Then:    PolicyAction{Effect: EffectRedact},
+	})
+	e.AddPolicy(Policy{
+		ID:      "no-pattern-redact",
+		Enabled: true,
+		// 无 pattern，应跳过
+		Then: PolicyAction{Effect: EffectRedact},
+	})
+	e.AddPolicy(Policy{
+		ID:      "deny-policy",
+		Enabled: true,
+		When:    PolicyCondition{Pattern: "secret-word"},
+		Then:    PolicyAction{Effect: EffectDeny},
+	})
+	content := "this contains secret-word here"
+	if got := e.Redact(content); got != content {
+		t.Errorf("disabled/无 pattern/非 redact 策略不应参与脱敏，got %q", got)
+	}
+
+	e.AddPolicy(Policy{
+		ID:      "enabled-redact",
+		Enabled: true,
+		When:    PolicyCondition{Pattern: "secret-word"},
+		Then:    PolicyAction{Effect: EffectRedact},
+	})
+	if got := e.Redact(content); got != "this contains *** here" {
+		t.Errorf("enabled redact 策略应生效，got %q", got)
 	}
 }

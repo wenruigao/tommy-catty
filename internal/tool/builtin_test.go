@@ -2,6 +2,8 @@ package tool
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -518,5 +520,111 @@ func TestShellExec_Validate_RmLikeSafe(t *testing.T) {
 		if err := s.validateCommand(cmd); err != nil {
 			t.Errorf("safe command should pass: %q: %v", cmd, err)
 		}
+	}
+}
+
+// TestRegisterBuiltinTools_WorkDirSandbox 验证 workDir 非空时 file_read/file_write
+// 被限制在该目录内：目录内文件放行，目录外拒绝。
+func TestRegisterBuiltinTools_WorkDirSandbox(t *testing.T) {
+	workDir := t.TempDir()
+	// 目录内的测试文件
+	insidePath := filepath.Join(workDir, "inside.txt")
+	if err := os.WriteFile(insidePath, []byte("hello"), 0644); err != nil {
+		t.Fatalf("创建测试文件失败: %v", err)
+	}
+	// 目录外的测试文件
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "outside.txt")
+	if err := os.WriteFile(outsidePath, []byte("secret"), 0644); err != nil {
+		t.Fatalf("创建测试文件失败: %v", err)
+	}
+
+	reg := NewRegistry()
+	RegisterBuiltinTools(reg, workDir)
+
+	readTool, ok := reg.Get("file_read")
+	if !ok {
+		t.Fatal("file_read 应已注册")
+	}
+	// 目录内读取放行
+	if _, err := readTool.Execute(context.Background(), map[string]interface{}{"path": insidePath}); err != nil {
+		t.Errorf("目录内文件应允许读取: %v", err)
+	}
+	// 目录外读取拒绝
+	if _, err := readTool.Execute(context.Background(), map[string]interface{}{"path": outsidePath}); err == nil {
+		t.Error("目录外文件应拒绝读取")
+	}
+
+	writeTool, ok := reg.Get("file_write")
+	if !ok {
+		t.Fatal("file_write 应已注册")
+	}
+	// 目录内写入放行
+	if _, err := writeTool.Execute(context.Background(), map[string]interface{}{
+		"path": filepath.Join(workDir, "out.txt"), "content": "data",
+	}); err != nil {
+		t.Errorf("目录内文件应允许写入: %v", err)
+	}
+	// 目录外写入拒绝
+	if _, err := writeTool.Execute(context.Background(), map[string]interface{}{
+		"path": filepath.Join(outsideDir, "evil.txt"), "content": "data",
+	}); err == nil {
+		t.Error("目录外文件应拒绝写入")
+	}
+}
+
+// TestRegisterBuiltinTools_RelativeWorkDir 验证相对路径的 workDir 会转为绝对路径后再比对。
+func TestRegisterBuiltinTools_RelativeWorkDir(t *testing.T) {
+	base := t.TempDir()
+	// macOS 上 TempDir 位于 /var（符号链接到 /private/var），而 os.Getwd 返回
+	// 解析后的真实路径；提前解析符号链接，保证前缀比对一致
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		base = resolved
+	}
+	sub := filepath.Join(base, "sub")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatalf("创建目录失败: %v", err)
+	}
+	insidePath := filepath.Join(sub, "f.txt")
+	if err := os.WriteFile(insidePath, []byte("x"), 0644); err != nil {
+		t.Fatalf("创建文件失败: %v", err)
+	}
+
+	// 在 base 目录下以相对路径 "sub" 注册
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("获取工作目录失败: %v", err)
+	}
+	if err := os.Chdir(base); err != nil {
+		t.Fatalf("切换工作目录失败: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	reg := NewRegistry()
+	RegisterBuiltinTools(reg, "sub")
+
+	readTool, _ := reg.Get("file_read")
+	if _, err := readTool.Execute(context.Background(), map[string]interface{}{"path": insidePath}); err != nil {
+		t.Errorf("相对 workDir 应正确转为绝对路径并放行目录内文件: %v", err)
+	}
+	if _, err := readTool.Execute(context.Background(), map[string]interface{}{"path": filepath.Join(base, "other.txt")}); err == nil {
+		t.Error("目录外文件应拒绝读取")
+	}
+}
+
+// TestRegisterBuiltinTools_EmptyWorkDir 验证 workDir 为空字符串时不做目录限制。
+func TestRegisterBuiltinTools_EmptyWorkDir(t *testing.T) {
+	reg := NewRegistry()
+	RegisterBuiltinTools(reg, "")
+
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "anywhere.txt")
+	if err := os.WriteFile(outsidePath, []byte("data"), 0644); err != nil {
+		t.Fatalf("创建测试文件失败: %v", err)
+	}
+
+	readTool, _ := reg.Get("file_read")
+	if _, err := readTool.Execute(context.Background(), map[string]interface{}{"path": outsidePath}); err != nil {
+		t.Errorf("空 workDir 不应限制读取路径: %v", err)
 	}
 }

@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode"
 )
 
 // ============================================================
@@ -244,5 +246,52 @@ func TestClient_StripPrefix_NoPrefix(t *testing.T) {
 	result := c.StripPrefix("test-server_search")
 	if result != "search" {
 		t.Errorf("StripPrefix with name prefix = %q, want search", result)
+	}
+}
+
+// ============================================================
+// Description sanitization tests
+// ============================================================
+
+// TestMCPToolAdapter_DescriptionTruncated 验证超长描述被截断到 500 字符。
+func TestMCPToolAdapter_DescriptionTruncated(t *testing.T) {
+	client := &Client{cfg: ClientConfig{Name: "srv"}}
+	long := strings.Repeat("a", 1000)
+	adapter := NewMCPToolAdapter(client, ToolDefinition{Name: "t", Description: long})
+	desc := adapter.Description()
+	if len([]rune(desc)) > maxDescriptionLen+3 { // 截断后追加 "..."
+		t.Errorf("描述应截断到 %d 字符，实际 %d", maxDescriptionLen, len([]rune(desc)))
+	}
+	if !strings.HasSuffix(desc, "...") {
+		t.Error("截断后的描述应以 ... 结尾")
+	}
+}
+
+// TestMCPToolAdapter_DescriptionStripsControlChars 验证描述中的控制字符被剥离，
+// 换行与制表符保留。
+func TestMCPToolAdapter_DescriptionStripsControlChars(t *testing.T) {
+	client := &Client{cfg: ClientConfig{Name: "srv"}}
+	// 混入 NUL、ESC、响铃等控制字符（常见于终端逃逸注入）
+	dirty := "正常描述\x00\x1b[31m\a\n第二行\t缩进"
+	adapter := NewMCPToolAdapter(client, ToolDefinition{Name: "t", Description: dirty})
+	desc := adapter.Description()
+	for _, r := range desc {
+		if r != '\n' && r != '\t' && unicode.IsControl(r) {
+			t.Errorf("描述中不应残留控制字符 %q: %q", r, desc)
+		}
+	}
+	if !strings.Contains(desc, "\n第二行\t缩进") {
+		t.Errorf("换行与制表符应保留，结果: %q", desc)
+	}
+	if !strings.Contains(desc, "正常描述") {
+		t.Errorf("正常内容应保留，结果: %q", desc)
+	}
+}
+
+// TestSanitizeDescription_ShortUnchanged 验证未超限且无控制字符的描述原样返回。
+func TestSanitizeDescription_ShortUnchanged(t *testing.T) {
+	s := "搜索互联网获取信息\n支持多关键词"
+	if got := sanitizeDescription(s); got != s {
+		t.Errorf("普通描述不应被修改，got %q", got)
 	}
 }

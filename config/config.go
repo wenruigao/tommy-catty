@@ -47,6 +47,24 @@ type Config struct {
 
 	// MCP MCP Server 接入配置
 	MCP MCPConfig `yaml:"mcp"`
+
+	// Persona Agent 人格体系配置（agent.md / soul.md / 用户画像）
+	Persona PersonaConfig `yaml:"persona"`
+}
+
+// PersonaConfig Agent 人格体系配置
+type PersonaConfig struct {
+	// AgentMDPath agent.md 路径（Agent 职责与权限边界，默认 config/agent.md）
+	AgentMDPath string `yaml:"agent_md_path"`
+
+	// SoulMDPath soul.md 路径（Agent 人格与对话风格，默认 config/soul.md）
+	SoulMDPath string `yaml:"soul_md_path"`
+
+	// UserProfilesDir 用户画像目录（默认 data/users）
+	UserProfilesDir string `yaml:"user_profiles_dir"`
+
+	// ProfileUpdateIntervalRuns 每完成多少次任务更新一次用户画像（默认 3）
+	ProfileUpdateIntervalRuns int `yaml:"profile_update_interval_runs"`
 }
 
 // DatabaseEntry 单个数据库数据源的 YAML 配置（对应 db_query 工具）。
@@ -365,6 +383,18 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Search.MaxResults == 0 {
 		c.Search.MaxResults = 5
+	}
+	if c.Persona.AgentMDPath == "" {
+		c.Persona.AgentMDPath = "config/agent.md"
+	}
+	if c.Persona.SoulMDPath == "" {
+		c.Persona.SoulMDPath = "config/soul.md"
+	}
+	if c.Persona.UserProfilesDir == "" {
+		c.Persona.UserProfilesDir = "data/users"
+	}
+	if c.Persona.ProfileUpdateIntervalRuns == 0 {
+		c.Persona.ProfileUpdateIntervalRuns = 3
 	}
 }
 

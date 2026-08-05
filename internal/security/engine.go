@@ -109,6 +109,26 @@ func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 	return decisions
 }
 
+// Redact 对内容执行脱敏处理：遍历所有已启用且效果为 redact 的策略，
+// 用其预编译 pattern 将匹配到的内容替换为 "***"，返回处理后的内容。
+// 无 pattern（或正则无效）的策略会被跳过。供输出门禁在返回内容前调用。
+func (e *Engine) Redact(content string) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	result := content
+	for _, p := range e.policies {
+		if !p.Enabled || p.Then.Effect != EffectRedact {
+			continue
+		}
+		if p.When.compiledPattern == nil {
+			continue
+		}
+		result = p.When.compiledPattern.ReplaceAllString(result, "***")
+	}
+	return result
+}
+
 // matchesCondition 检查检查点是否匹配策略条件
 func matchesCondition(cond PolicyCondition, cp Checkpoint) bool {
 	// 检查工具名称匹配
