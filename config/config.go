@@ -24,6 +24,10 @@ type Config struct {
 	// 安全策略文件路径
 	PolicyFile string `yaml:"policy_file"`
 
+	// AuditLogPath 安全审计日志 JSONL 落盘路径（空则禁用审计）：
+	// 记录 L2+ 工具调用与所有命中策略的决策（操作人/输入/审批可追溯）
+	AuditLogPath string `yaml:"audit_log_path"`
+
 	// Skill 存储路径
 	SkillStorePath string `yaml:"skill_store_path"`
 
@@ -234,6 +238,10 @@ type ServerConfig struct {
 
 	// AuthJWTSecret JWT HS256 签名密钥（auth_mode 为 jwt 时必填），支持 ${ENV_VAR} 引用
 	AuthJWTSecret string `yaml:"auth_jwt_secret"`
+
+	// AuthUserID auth_mode 为 api_key 时绑定的固定用户身份（建议配置）：
+	// 非空时忽略客户端的 X-User-ID，防止同一密钥持有者互相冒充
+	AuthUserID string `yaml:"auth_user_id"`
 }
 
 // MCPConfig MCP Server 接入配置。
@@ -382,6 +390,11 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Session.CleanupInterval == "" {
 		c.Session.CleanupInterval = "5m"
+	}
+	if c.Session.RequestsPerMinute == 0 {
+		// 默认启用 per-user 限流 30 次/分钟（与安全设计的"每会话限流"口径一致，
+		// 0 表示不限流会让 per-user 限流实际关闭）
+		c.Session.RequestsPerMinute = 30
 	}
 	if c.Search.DefaultEngine == "" {
 		c.Search.DefaultEngine = "duckduckgo"

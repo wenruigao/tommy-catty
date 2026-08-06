@@ -220,6 +220,7 @@ func main() {
 		decisions := secEngine.Evaluate(security.Checkpoint{
 			Type:    "task_start",
 			Content: input,
+			UserID:  "local",
 		})
 		if blocked := checkDecisions(decisions); blocked {
 			continue
@@ -246,8 +247,9 @@ func main() {
 
 		// 安全策略检查（任务结束）
 		secEngine.Evaluate(security.Checkpoint{
-			Type: "task_end",
-			Cost: float64(result.TokenUsage) * 0.00001,
+			Type:   "task_end",
+			UserID: "local",
+			Cost:   float64(result.TokenUsage) * 0.00001,
 		})
 
 		// 尝试自动生成 Skill

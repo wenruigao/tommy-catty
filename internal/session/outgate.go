@@ -13,11 +13,18 @@ import (
 // redact 策略对敏感内容（如 API Key、密码）进行脱敏。
 type OutputGateAdapter struct {
 	engine *security.Engine
+	userID string // 审计身份（写入 Checkpoint.UserID，空表示未设置）
 }
 
-// NewOutputGateAdapter 创建输出门禁适配器。
+// NewOutputGateAdapter 创建输出门禁适配器（匿名身份，兼容既有调用）。
 func NewOutputGateAdapter(secEngine *security.Engine) *OutputGateAdapter {
 	return &OutputGateAdapter{engine: secEngine}
+}
+
+// NewOutputGateAdapterForUser 创建带用户身份的输出门禁适配器，
+// userID 会写入安全检查点供审计落盘。
+func NewOutputGateAdapterForUser(secEngine *security.Engine, userID string) *OutputGateAdapter {
+	return &OutputGateAdapter{engine: secEngine, userID: userID}
 }
 
 // CheckOutput 检查并可能修改输出内容。
@@ -27,6 +34,7 @@ func (g *OutputGateAdapter) CheckOutput(_ context.Context, content string) (stri
 	decisions := g.engine.Evaluate(security.Checkpoint{
 		Type:      "llm_output",
 		Content:   content,
+		UserID:    g.userID,
 		Timestamp: time.Now(),
 	})
 

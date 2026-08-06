@@ -18,3 +18,12 @@ type OutputGate interface {
 	// 返回值为实际对外输出的内容（脱敏后与原始内容可能不同）。
 	CheckOutput(ctx context.Context, content string) (string, error)
 }
+
+// ToolReturnGate 在工具执行成功后、返回内容注入 LLM 上下文前进行安全检查
+// （tool_return 检查点：对返回中包含的密钥等敏感内容脱敏、拦截违规内容）。
+type ToolReturnGate interface {
+	// CheckToolReturn 检查工具返回内容并可能修改（脱敏）。
+	// toolName 为工具名，risk 为工具风险等级，output 为原始返回；
+	// 返回值为实际注入上下文的内容；返回非 nil error 表示返回内容被拦截。
+	CheckToolReturn(ctx context.Context, toolName string, risk int, output string) (string, error)
+}

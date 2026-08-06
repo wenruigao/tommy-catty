@@ -122,6 +122,8 @@ engine:
 #   auth_mode: "header"                  # header（内网，信任 X-User-ID）| api_key | jwt
 #   auth_api_key: "${AGENT_API_KEY}"     # auth_mode=api_key 时必填，请求需携带 X-API-Key
 #   auth_jwt_secret: "${AGENT_JWT_SECRET}" # auth_mode=jwt 时必填（HS256 签名密钥）
+#   auth_user_id: "agent-bot"                # auth_mode=api_key 时建议配置：绑定固定身份，
+#                                            # 忽略客户端 X-User-ID（防止同一密钥持有者互相冒充）
 
 # ────────────────────────────────────────────────────────────
 # 搜索引擎配置（web_search 工具）
@@ -130,6 +132,16 @@ search:
   default_engine: "duckduckgo"   # duckduckgo（免费）| tavily（需 API Key，效果更好）
   # tavily_api_key: "${TAVILY_API_KEY}"  # Tavily API Key（可选）
   max_results: 5                 # 默认返回结果数
+
+# ────────────────────────────────────────────────────────
+# 会话与限流
+# ────────────────────────────────────────────────────────
+session:
+  requests_per_minute: 30        # 每用户每分钟最大请求数（per-user 滑动窗口限流；0 表示不限流）
+
+# 安全审计日志（JSONL 追加写）：记录 L2+ 工具调用与所有命中策略的决策，
+# 含操作人（user_id）、检查点、输入内容，保证审批决策可追溯；留空则禁用审计
+audit_log_path: "data/audit.jsonl"
 
 policy_file: "config/policy.yaml"
 skill_store_path: "data/skills.json"

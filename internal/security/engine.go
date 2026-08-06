@@ -15,6 +15,8 @@ import (
 type Engine struct {
 	// policies 存储所有已加载的策略
 	policies []Policy
+	// audit 审计日志记录器（nil 表示不记录审计）
+	audit *AuditLogger
 	// mu 保护 policies 的读写锁
 	mu sync.RWMutex
 }
@@ -68,6 +70,15 @@ func (e *Engine) LoadFromYAML(data []byte) error {
 	return nil
 }
 
+// SetAuditLogger 设置审计日志记录器（传 nil 关闭审计）。
+// 审计覆盖：所有命中策略决策的检查点（审批/拒绝/脱敏决策可追溯），
+// 以及 L2 及以上风险等级的工具调用（记录操作人与输入内容）。
+func (e *Engine) SetAuditLogger(l *AuditLogger) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.audit = l
+}
+
 // PolicyCount 返回当前已加载的策略数量。
 func (e *Engine) PolicyCount() int {
 	e.mu.RLock()
@@ -116,6 +127,10 @@ func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 	}
 
 	if len(matched) == 0 {
+		// 无策略命中：L2+ 工具调用仍需审计留痕（记录操作人与输入）
+		if e.audit != nil {
+			e.audit.LogAudit(cp, nil)
+		}
 		return nil
 	}
 
@@ -135,6 +150,11 @@ func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 		if p.Then.Effect == EffectDeny {
 			break // deny 是最终决策，不再继续
 		}
+	}
+
+	// 审计留痕：命中策略的检查点全部落盘（审批决策可追溯）
+	if e.audit != nil {
+		e.audit.LogAudit(cp, decisions)
 	}
 
 	return decisions

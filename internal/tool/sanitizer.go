@@ -112,14 +112,18 @@ func truncateToTokens(s string, maxTokens int) string {
 }
 
 // SanitizeInput 对用户输入做注入检测与清洗（输入层防御）。
-// 返回清洗后的文本和是否为可疑输入。
+// 命中注入模式（injectionPatterns）的指令短语会被剥离替换（而非仅标记），
+// 返回清洗后的文本和是否为可疑输入。明确的注入指令仍由安全策略引擎
+// 的 task_start 检查点裁决是否整体拒绝，本函数是策略未覆盖时的兜底。
 func SanitizeInput(input string) (cleaned string, suspicious bool) {
-	count := DetectInjection(input)
-	if count == 0 {
+	if DetectInjection(input) == 0 {
 		return input, false
 	}
-	// 标记为可疑但不完全阻断（由安全策略引擎决定后续处理）
-	return input, true
+	cleaned = input
+	for _, re := range injectionPatterns {
+		cleaned = re.ReplaceAllString(cleaned, "[已剥离可疑指令]")
+	}
+	return strings.TrimSpace(cleaned), true
 }
 
 // DetectOutputLeak 检测 LLM 输出是否泄露 system prompt 关键片段。

@@ -424,9 +424,10 @@ policies:
 // ============================================================
 
 func TestDefaultPolicies_Count(t *testing.T) {
+	// 10 条：原 9 条 + l3-approval（L3 风险等级默认审批兜底策略）
 	policies := DefaultPolicies()
-	if len(policies) != 9 {
-		t.Errorf("DefaultPolicies should return 9 policies, got %d", len(policies))
+	if len(policies) != 10 {
+		t.Errorf("DefaultPolicies should return 10 policies, got %d", len(policies))
 	}
 }
 

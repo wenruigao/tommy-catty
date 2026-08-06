@@ -12,6 +12,7 @@ import (
 	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
 	"github.com/tommy-cat/agent/internal/memory"
+	"github.com/tommy-cat/agent/internal/tool"
 	"github.com/tommy-cat/agent/internal/trace"
 )
 
@@ -50,10 +51,25 @@ type SessionDeps struct {
 	RateLimit     RateLimitConfig
 	// Reflection 反思配置（nil 则禁用反思）
 	Reflection *engine.ReflectionConfig
-	// ToolGate 工具调用安全门禁（nil 则不检查）
+	// ToolGate 工具调用安全门禁（nil 则不检查）。
+	// 多用户场景优先使用 NewToolGate：共享同一实例会使限流桶跨用户共用。
 	ToolGate engine.ToolGate
-	// OutputGate 最终输出安全门禁（nil 则不检查）
+	// OutputGate 最终输出安全门禁（nil 则不检查）。
+	// 多用户场景优先使用 NewOutputGate（每用户独立审计身份）。
 	OutputGate engine.OutputGate
+	// ReturnGate 工具返回安全门禁（tool_return 检查点，nil 则不检查）。
+	ReturnGate engine.ToolReturnGate
+	// NewToolGate 每用户工具门禁工厂（非 nil 时优先于 ToolGate）：
+	// 为每个用户会话创建独立门禁实例（独立限流桶 + 审计身份），
+	// 避免全体用户共享一个限流桶导致配额被互相耗尽。
+	NewToolGate func(userID string) engine.ToolGate
+	// NewOutputGate 每用户输出门禁工厂（非 nil 时优先于 OutputGate）。
+	NewOutputGate func(userID string) engine.OutputGate
+	// NewReturnGate 每用户工具返回门禁工厂（非 nil 时优先于 ReturnGate）。
+	NewReturnGate func(userID string) engine.ToolReturnGate
+	// ToolRiskLookup 工具风险等级查询（供引擎 tool_return 检查点使用，
+	// nil 则所有工具视为 0 级）。
+	ToolRiskLookup func(toolName string) int
 	// TraceExporter 追踪导出器（nil 则不导出）
 	TraceExporter *trace.Exporter
 
@@ -101,6 +117,20 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 	// task/llm.chat/tool.* 等 span（/trace 与 JSONL 导出的数据来源）
 	tracer := trace.NewTracer()
 
+	// per-user 门禁装配：工厂优先，保证每个用户持有独立限流桶与审计身份
+	toolGate := deps.ToolGate
+	if deps.NewToolGate != nil {
+		toolGate = deps.NewToolGate(userID)
+	}
+	outputGate := deps.OutputGate
+	if deps.NewOutputGate != nil {
+		outputGate = deps.NewOutputGate(userID)
+	}
+	returnGate := deps.ReturnGate
+	if deps.NewReturnGate != nil {
+		returnGate = deps.NewReturnGate(userID)
+	}
+
 	eng := engine.NewEngine(engine.EngineConfig{
 		LLM:                  deps.LLM,
 		Tools:                deps.Tools,
@@ -109,8 +139,11 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 		SystemPrompt:         deps.SystemPrompt,
 		CtxManager:           ctxMgr,
 		Reflection:           deps.Reflection,
-		ToolGate:             deps.ToolGate,
-		OutputGate:           deps.OutputGate,
+		ToolGate:             toolGate,
+		OutputGate:           outputGate,
+		ReturnGate:           returnGate,
+		UserID:               userID,
+		ToolRiskOf:           deps.ToolRiskLookup,
 		SystemPromptProvider: promptProvider,
 		Tracer:               tracer,
 	})
@@ -139,9 +172,14 @@ func (s *UserSession) Run(ctx context.Context, goal string) (*engine.ExecutionTr
 
 	s.LastActive = time.Now()
 
-	// 限流检查
+	// 限流检查（per-user 滑动窗口）
 	if !s.limiter.Allow() {
 		return nil, ErrRateLimited
+	}
+
+	// 输入层防御：剥离用户输入中的注入指令短语（不只标记）
+	if cleaned, suspicious := tool.SanitizeInput(goal); suspicious {
+		goal = cleaned
 	}
 
 	// Skill 匹配：命中时将已验证的执行经验拼接到目标之前

@@ -41,7 +41,8 @@ policies:
     priority: 2
     enabled: true
     when:
-      action_type: [llm_output]
+      # 覆盖 tool_return：工具返回中的密钥在注入上下文前脱敏（该检查点已在引擎接线）
+      action_type: [tool_return, llm_output]
       pattern: "(?i)(sk-[a-zA-Z0-9]{20,}|password\\s*[:=]\\s*\\S+|api[_-]?key\\s*[:=]\\s*\\S+)"
     then:
       effect: redact
@@ -91,7 +92,9 @@ policies:
     enabled: true
     when:
       tool_names: [file_read, file_write]
-      pattern: "(/etc/|/usr/|/System/|/var/|~/.ssh)"
+      # 除系统目录外，覆盖展开后的用户敏感目录（/Users/x/.ssh 等）与 shell 配置文件；
+      # 旧写法只匹配字面 ~/.ssh，展开后的绝对路径可绕过
+      pattern: "(/etc/|/usr/|/System/|/var/|/boot/|/Library/|~/\\.ssh|/\\.ssh/|/Users/[^/\\s]+/\\.(ssh|aws)|/home/[^/\\s]+/\\.(ssh|aws)|/\\.(bashrc|zshrc|profile|gitconfig)\\b)"
     then:
       effect: deny
       message: "文件操作超出允许的工作目录范围。"
@@ -106,6 +109,24 @@ policies:
     then:
       effect: require_approval
       message: "输出内容较长（>5000字），建议人工审查后发布。"
+
+  # L3 默认审批：基于风险等级的兜底审批策略。无其他策略命中时
+  # （如白天 shell_exec 执行无特征命令），L3 工具也不得直接执行；
+  # 非工作时间由 office-hours 的 deny 先行短路。HTTP 模式下审批不可交互，
+  # require_approval 自动拒绝（等价 deny）；CLI 模式终端交互确认。
+  - id: l3-approval
+    name: "L3 高危工具默认审批"
+    description: "L3 高危工具基于风险等级默认要求人工审批，防止无策略命中时直接执行"
+    priority: 8
+    enabled: true
+    when:
+      action_type: [tool_call]
+      # 引擎按 "L<级别>" 格式比对，必须写 L3
+      tool_risk: ["L3"]
+    then:
+      effect: require_approval
+      message: "L3 高危工具调用需要人工审批确认。"
+      notify_severity: warning
 
   # 提示注入防护：在任务开始时检测输入中的明确指令注入短语。
   # 只收录明确的注入指令（ignore/disregard/forget previous instructions、

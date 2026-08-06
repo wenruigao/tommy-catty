@@ -86,21 +86,34 @@ func main() {
 		log.Printf("警告: 策略文件解析失败，已回退内置默认策略: %v", err)
 	}
 
-	// 工具调用安全门禁：HTTP 模式无法交互审批，require_approval 一律自动拒绝
-	toolGate := session.NewToolGateAdapter(secEngine, func(_ context.Context, toolName, _, reason string) bool {
-		log.Printf("警告: 工具 %q 需要人工审批，HTTP 模式无法交互，已自动拒绝（%s）", toolName, reason)
-		return false
-	})
-	// 透传工具风险等级，使按 tool_risk 匹配的策略能够命中
-	toolGate.SetRiskLookup(func(toolName string) int {
+	// 安全审计日志（JSONL 落盘）：记录 L2+ 工具调用与所有命中策略的决策
+	//（含操作人/输入内容），满足"审批决策可追溯"要求；留空则禁用
+	if cfg.AuditLogPath != "" {
+		auditLogger, aerr := security.NewAuditLogger(cfg.AuditLogPath)
+		if aerr != nil {
+			log.Printf("警告: 审计日志初始化失败（已禁用审计）: %v", aerr)
+		} else if auditLogger != nil {
+			secEngine.SetAuditLogger(auditLogger)
+			defer auditLogger.Close()
+			fmt.Printf("  📋 审计日志: %s\n", cfg.AuditLogPath)
+		}
+	}
+
+	// 工具风险等级查询（门禁与引擎 tool_return 检查点共用）
+	riskLookup := func(toolName string) int {
 		if meta, ok := registry.Get(toolName); ok {
 			return int(meta.RiskLevel)
 		}
 		return 0
-	})
+	}
 
-	// 最终输出安全门禁（敏感信息脱敏、输出审查）
-	outputGate := session.NewOutputGateAdapter(secEngine)
+	// 工具调用安全门禁：HTTP 模式无法交互审批，require_approval 一律自动拒绝。
+	// 注意：门禁按用户创建（见下方 NewToolGate 工厂），每个用户会话持有
+	// 独立限流桶与审计身份，避免全体用户共享一个限流桶互相耗尽配额。
+	httpApprover := func(_ context.Context, toolName, _, reason string) bool {
+		log.Printf("警告: 工具 %q 需要人工审批，HTTP 模式无法交互，已自动拒绝（%s）", toolName, reason)
+		return false
+	}
 
 	// 初始化 Skill 系统（store/matcher/generator 均需接入会话，否则整个 Skill 系统失效）
 	skillStore := skill.NewStore(cfg.SkillStorePath)
@@ -153,16 +166,27 @@ func main() {
 	)
 
 	deps := session.SessionDeps{
-		LLM:             llmAdp,
-		Tools:           registry,
-		MaxIterations:   cfg.Engine.MaxIterations,
-		SystemPrompt:    systemPrompt,
-		MemorySize:      cfg.Session.MemorySize,
-		CtxConfig:       ctxmgr.DefaultConfig(),
-		Summarizer:      summarizer,
-		Reflection:      cfg.Engine.Reflection.ToReflectionConfig(),
-		ToolGate:        toolGate,
-		OutputGate:      outputGate,
+		LLM:           llmAdp,
+		Tools:         registry,
+		MaxIterations: cfg.Engine.MaxIterations,
+		SystemPrompt:  systemPrompt,
+		MemorySize:    cfg.Session.MemorySize,
+		CtxConfig:     ctxmgr.DefaultConfig(),
+		Summarizer:    summarizer,
+		Reflection:    cfg.Engine.Reflection.ToReflectionConfig(),
+		// per-user 门禁工厂：每个用户会话独立限流桶 + 审计身份
+		NewToolGate: func(userID string) engine.ToolGate {
+			gate := session.NewToolGateAdapterForUser(secEngine, httpApprover, userID)
+			gate.SetRiskLookup(riskLookup)
+			return gate
+		},
+		NewOutputGate: func(userID string) engine.OutputGate {
+			return session.NewOutputGateAdapterForUser(secEngine, userID)
+		},
+		NewReturnGate: func(userID string) engine.ToolReturnGate {
+			return session.NewReturnGateAdapterForUser(secEngine, userID)
+		},
+		ToolRiskLookup:  riskLookup,
 		TraceExporter:   traceExporter,
 		AgentMD:         agentMD,
 		SoulMD:          soulMD,
@@ -224,6 +248,8 @@ func main() {
 		Mode:      cfg.Server.AuthMode,
 		APIKey:    cfg.Server.AuthAPIKey,
 		JWTSecret: cfg.Server.AuthJWTSecret,
+		// api_key 模式绑定固定身份（配置后忽略客户端 X-User-ID，防互相冒充）
+		UserID: cfg.Server.AuthUserID,
 	})(mux)
 
 	// chat 请求进入 handler 前做 task_start 策略评估（deny 直接返回 400）
@@ -276,6 +302,7 @@ func taskStartGuard(secEngine *security.Engine, next http.Handler) http.Handler 
 					decisions := secEngine.Evaluate(security.Checkpoint{
 						Type:      "task_start",
 						Content:   req.Message,
+						UserID:    server.UserIDFromContext(r.Context()),
 						Timestamp: time.Now(),
 					})
 					for _, d := range decisions {

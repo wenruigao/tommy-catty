@@ -83,6 +83,13 @@ func (e *Engine) Run(ctx context.Context, goal string) (traceResult *ExecutionTr
 			// 没有工具调用，视为最终答案
 			finalAnswer := resp.Content
 
+			// ★ 输出层泄露检测：输出中复现系统提示词连续大片段（8-gram）视为泄露，拒绝输出
+			if tool.DetectOutputLeak(finalAnswer, e.currentSystemPrompt()) {
+				trace.EndTime = time.Now()
+				trace.Error = "最终答案疑似泄露系统提示词内容，已拒绝输出"
+				return trace, fmt.Errorf("final answer rejected: system prompt leak detected")
+			}
+
 			// ★ 输出门禁：最终答案对外返回前进行安全检查（如脱敏、输出审查）。
 			// 门禁可修改内容（脱敏）；返回错误视为本次输出被拒绝，
 			// 按 LLM 调用失败的既有路径反馈：记录中文错误并返回 error。
@@ -180,6 +187,20 @@ func (e *Engine) Run(ctx context.Context, goal string) (traceResult *ExecutionTr
 			// 失败信息为本地生成的错误描述，不清洗。
 			observation := step.Observation
 			if !callFailed {
+				// ★ tool_return 检查点：工具返回注入上下文前进行安全策略评估
+				//（如返回中的密钥脱敏、敏感内容拦截）；被拦截时以拦截说明替代原返回。
+				if e.returnGate != nil {
+					risk := 0
+					if e.toolRiskOf != nil {
+						risk = e.toolRiskOf(tc.Name)
+					}
+					checked, gateErr := e.returnGate.CheckToolReturn(ctx, tc.Name, risk, observation)
+					if gateErr != nil {
+						observation = fmt.Sprintf("工具返回被安全策略拦截: %v", gateErr)
+					} else {
+						observation = checked
+					}
+				}
 				observation = sanitizeToolObservation(tc.Name, observation)
 			}
 

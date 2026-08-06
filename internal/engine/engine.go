@@ -80,7 +80,13 @@ type EngineConfig struct {
 	Reflection    *ReflectionConfig // 反思配置（可选，nil 则禁用）
 	ToolGate      ToolGate          // 工具调用门禁（可选，nil 则不检查）
 	OutputGate    OutputGate        // 最终输出门禁（可选，nil 则不检查）
+	ReturnGate    ToolReturnGate    // 工具返回门禁（tool_return 检查点，可选，nil 则不检查）
 	Tracer        *trace.Tracer     // 全链路追踪器（可选，nil 则不记录 span）
+	// UserID 当前用户身份，透传给工具返回门禁供审计记录（可为空）。
+	UserID string
+	// ToolRiskOf 工具风险等级查询（0~3），tool_return 检查点使用；
+	// nil 时所有工具视为 0 级。
+	ToolRiskOf func(toolName string) int
 	// SystemPromptProvider 可选，每次 Run 动态生成系统提示词（用于注入
 	// agent.md/soul.md/用户画像等）。优先级高于 SystemPrompt；nil 时用 SystemPrompt。
 	SystemPromptProvider func() string
@@ -98,7 +104,9 @@ type Engine struct {
 	reflection           *ReflectionConfig // 反思配置（nil 则禁用）
 	toolGate             ToolGate          // 工具调用门禁（nil 则不检查）
 	outputGate           OutputGate        // 最终输出门禁（nil 则不检查）
+	returnGate           ToolReturnGate    // 工具返回门禁（nil 则不检查）
 	tracer               *trace.Tracer     // 全链路追踪器（nil 则不记录 span）
+	toolRiskOf           func(string) int  // 工具风险等级查询（nil 则视为 0）
 	systemPromptProvider func() string     // 动态系统提示词 Provider（nil 则用 systemPrompt）
 }
 
@@ -124,7 +132,9 @@ func NewEngine(cfg EngineConfig) *Engine {
 		reflection:           cfg.Reflection,
 		toolGate:             cfg.ToolGate,
 		outputGate:           cfg.OutputGate,
+		returnGate:           cfg.ReturnGate,
 		tracer:               cfg.Tracer,
+		toolRiskOf:           cfg.ToolRiskOf,
 		systemPromptProvider: cfg.SystemPromptProvider,
 	}
 }
@@ -148,6 +158,17 @@ func (e *Engine) endSpan(s *trace.Span, err error) {
 		return
 	}
 	e.tracer.EndSpan(s, err)
+}
+
+// currentSystemPrompt 返回本次执行实际使用的系统提示词
+// （动态 Provider 优先，返回空串时回退静态提示词），供输出泄露检测使用。
+func (e *Engine) currentSystemPrompt() string {
+	if e.systemPromptProvider != nil {
+		if provided := e.systemPromptProvider(); provided != "" {
+			return provided
+		}
+	}
+	return e.systemPrompt
 }
 
 // defaultSystemPrompt 是默认的系统提示词，指导 LLM 使用 ReAct 格式。
