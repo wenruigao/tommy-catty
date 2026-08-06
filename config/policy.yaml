@@ -9,7 +9,8 @@ policies:
     enabled: true
     when:
       tool_names: [shell_exec, code_run]
-      pattern: "(?i)(rm\\s+-rf|drop\\s+table|truncate\\s+table|delete\\s+from|format\\s+[a-z]:)"
+      # 不含 delete\s+from：DELETE 属 DML 且常规业务查询可能包含该字样，避免误伤
+      pattern: "(?i)(rm\\s+-rf|drop\\s+table|truncate\\s+table|format\\s+[a-z]:)"
     then:
       effect: deny
       message: "检测到破坏性操作，已拦截。如确需执行，请修改安全策略。"
@@ -62,9 +63,11 @@ policies:
     name: "工作时间高危操作限制"
     description: "仅工作时间（09:00-18:00）允许执行高危操作，非工作时间禁止"
     priority: 4
-    enabled: false
+    enabled: true
     when:
-      tool_risk: ["3"]
+      # 引擎按 "L<级别>" 格式比对，必须写 L3（写 "3" 永不命中）
+      tool_risk: ["L3"]
+      # 条件描述"禁止窗口"（非工作时间），命中即 deny
       time_range: "18:00-09:00"
     then:
       effect: deny

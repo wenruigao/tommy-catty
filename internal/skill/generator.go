@@ -23,6 +23,13 @@ func NewGenerator(store *Store) *Generator {
 	}
 }
 
+// Save 将技能持久化到生成器关联的存储（委托 Store.Save）。
+// GenerateFromTrace 生成并通过校验的技能必须调用 Save，
+// 否则技能不会落盘，匹配器永远无技能可用。
+func (g *Generator) Save(s *Skill) error {
+	return g.store.Save(s)
+}
+
 // traceData 表示执行追踪的 JSON 结构
 type traceData struct {
 	// TraceID 追踪唯一标识

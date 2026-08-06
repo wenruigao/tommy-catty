@@ -25,14 +25,15 @@ type UserSession struct {
 	CreatedAt  time.Time
 	LastActive time.Time
 
-	engine     *engine.Engine
-	memory     *memory.CombinedMemory
-	ctxManager *ctxmgr.Manager
-	tracer     *trace.Tracer
-	limiter    *RateLimiter
-	exporter   *trace.Exporter           // 可为 nil
-	profiler   *UserProfiler             // 可为 nil（禁用用户画像生成）
-	skillHint  func(input string) string // 可为 nil
+	engine         *engine.Engine
+	memory         *memory.CombinedMemory
+	ctxManager     *ctxmgr.Manager
+	tracer         *trace.Tracer
+	limiter        *RateLimiter
+	exporter       *trace.Exporter                     // 可为 nil
+	profiler       *UserProfiler                       // 可为 nil（禁用用户画像生成）
+	skillHint      func(input string) string           // 可为 nil
+	onTaskComplete func(result *engine.ExecutionTrace) // 可为 nil
 
 	mu sync.Mutex // 同用户串行保护
 }
@@ -67,6 +68,8 @@ type SessionDeps struct {
 	// SkillHintProvider Skill 匹配提示（nil 或不命中则不拼接）。
 	// 返回非空时，提示文本会拼接到用户目标之前一并交给引擎。
 	SkillHintProvider func(input string) string
+	// OnTaskComplete 任务成功完成后的回调（如自动生成并持久化 Skill），nil 则不调用。
+	OnTaskComplete func(result *engine.ExecutionTrace)
 }
 
 // NewUserSession 创建一个用户会话实例，分配独立的有状态组件。
@@ -94,6 +97,10 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 		}
 	}
 
+	// 追踪：每个用户持有独立 Tracer，注入引擎后由引擎记录
+	// task/llm.chat/tool.* 等 span（/trace 与 JSONL 导出的数据来源）
+	tracer := trace.NewTracer()
+
 	eng := engine.NewEngine(engine.EngineConfig{
 		LLM:                  deps.LLM,
 		Tools:                deps.Tools,
@@ -105,21 +112,23 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 		ToolGate:             deps.ToolGate,
 		OutputGate:           deps.OutputGate,
 		SystemPromptProvider: promptProvider,
+		Tracer:               tracer,
 	})
 
 	now := time.Now()
 	return &UserSession{
-		UserID:     userID,
-		CreatedAt:  now,
-		LastActive: now,
-		engine:     eng,
-		memory:     combined,
-		ctxManager: ctxMgr,
-		tracer:     trace.NewTracer(),
-		limiter:    NewRateLimiter(deps.RateLimit),
-		exporter:   deps.TraceExporter,
-		profiler:   deps.Profiler,
-		skillHint:  deps.SkillHintProvider,
+		UserID:         userID,
+		CreatedAt:      now,
+		LastActive:     now,
+		engine:         eng,
+		memory:         combined,
+		ctxManager:     ctxMgr,
+		tracer:         tracer,
+		limiter:        NewRateLimiter(deps.RateLimit),
+		exporter:       deps.TraceExporter,
+		profiler:       deps.Profiler,
+		skillHint:      deps.SkillHintProvider,
+		onTaskComplete: deps.OnTaskComplete,
 	}
 }
 
@@ -153,6 +162,11 @@ func (s *UserSession) Run(ctx context.Context, goal string) (*engine.ExecutionTr
 	// 任务成功后按需更新用户画像（失败静默，不影响任务结果）
 	if err == nil && s.profiler != nil {
 		s.profiler.OnRunComplete(ctx, s.UserID, s.memory.GetContext(profilerHistoryLimit))
+	}
+
+	// 任务完成回调（如自动生成并持久化 Skill，不影响任务结果）
+	if err == nil && s.onTaskComplete != nil {
+		s.onTaskComplete(result)
 	}
 	return result, err
 }

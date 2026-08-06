@@ -9,6 +9,7 @@ import (
 	"github.com/tommy-cat/agent/internal/ctxmgr"
 	"github.com/tommy-cat/agent/internal/llm"
 	"github.com/tommy-cat/agent/internal/tool"
+	"github.com/tommy-cat/agent/internal/trace"
 )
 
 // State 表示引擎当前的执行状态。
@@ -79,6 +80,7 @@ type EngineConfig struct {
 	Reflection    *ReflectionConfig // 反思配置（可选，nil 则禁用）
 	ToolGate      ToolGate          // 工具调用门禁（可选，nil 则不检查）
 	OutputGate    OutputGate        // 最终输出门禁（可选，nil 则不检查）
+	Tracer        *trace.Tracer     // 全链路追踪器（可选，nil 则不记录 span）
 	// SystemPromptProvider 可选，每次 Run 动态生成系统提示词（用于注入
 	// agent.md/soul.md/用户画像等）。优先级高于 SystemPrompt；nil 时用 SystemPrompt。
 	SystemPromptProvider func() string
@@ -96,6 +98,7 @@ type Engine struct {
 	reflection           *ReflectionConfig // 反思配置（nil 则禁用）
 	toolGate             ToolGate          // 工具调用门禁（nil 则不检查）
 	outputGate           OutputGate        // 最终输出门禁（nil 则不检查）
+	tracer               *trace.Tracer     // 全链路追踪器（nil 则不记录 span）
 	systemPromptProvider func() string     // 动态系统提示词 Provider（nil 则用 systemPrompt）
 }
 
@@ -121,6 +124,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		reflection:           cfg.Reflection,
 		toolGate:             cfg.ToolGate,
 		outputGate:           cfg.OutputGate,
+		tracer:               cfg.Tracer,
 		systemPromptProvider: cfg.SystemPromptProvider,
 	}
 }
@@ -128,6 +132,22 @@ func NewEngine(cfg EngineConfig) *Engine {
 // ContextManager 返回引擎的上下文管理器（可能为 nil）
 func (e *Engine) ContextManager() *ctxmgr.Manager {
 	return e.ctxManager
+}
+
+// startSpan 开始一个追踪 span；未配置追踪器时返回 nil（空操作）。
+func (e *Engine) startSpan(traceID, name string, attrs map[string]string) *trace.Span {
+	if e.tracer == nil {
+		return nil
+	}
+	return e.tracer.StartSpan(traceID, name, attrs)
+}
+
+// endSpan 结束一个追踪 span；span 为 nil 时直接跳过。
+func (e *Engine) endSpan(s *trace.Span, err error) {
+	if e.tracer == nil || s == nil {
+		return
+	}
+	e.tracer.EndSpan(s, err)
 }
 
 // defaultSystemPrompt 是默认的系统提示词，指导 LLM 使用 ReAct 格式。

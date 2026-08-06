@@ -11,12 +11,15 @@ import (
 	"github.com/tommy-cat/agent/internal/tool"
 
 	"github.com/google/uuid"
+
+	// 本函数内局部变量名为 trace（ExecutionTrace），故包名取别名避免遮蔽
+	tracepkg "github.com/tommy-cat/agent/internal/trace"
 )
 
 // Run 执行 ReAct 循环，处理用户目标并返回完整的执行追踪。
 // 循环流程：构建提示 -> 上下文压缩 -> 调用 LLM -> 处理工具调用 -> 追加观察 -> 反思 -> 重复直到得出最终答案。
 // Engine 是无状态的，state 作为局部变量在本次调用内跟踪，支持并发安全。
-func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) {
+func (e *Engine) Run(ctx context.Context, goal string) (traceResult *ExecutionTrace, retErr error) {
 	// 初始化执行追踪
 	trace := &ExecutionTrace{
 		TaskID:    uuid.New().String(),
@@ -24,6 +27,13 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 		Steps:     make([]StepResult, 0),
 		StartTime: time.Now(),
 	}
+
+	// ★ 全链路追踪：task span 覆盖整次执行（未配置追踪器时为空操作）
+	var taskSpan *tracepkg.Span
+	if e.tracer != nil {
+		taskSpan = e.tracer.StartSpan(trace.TaskID, "task", map[string]string{"goal": goal})
+	}
+	defer func() { e.endSpan(taskSpan, retErr) }()
 
 	// 初始化反思状态
 	var replanState *ReplanState
@@ -53,8 +63,12 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 		// ★ 上下文压缩：每次调用 LLM 前执行上下文管理
 		messages = e.applyContextManagement(ctx, messages)
 
-		// 调用 LLM 获取响应
+		// 调用 LLM 获取响应（带追踪 span）
+		llmSpan := e.startSpan(trace.TaskID, "llm.chat", map[string]string{
+			"iteration": fmt.Sprintf("%d", i+1),
+		})
 		resp, err := e.llmGateway.Chat(ctx, messages, toolDefs)
+		e.endSpan(llmSpan, err)
 		if err != nil {
 			trace.EndTime = time.Now()
 			trace.Error = fmt.Sprintf("LLM 调用失败 (迭代 %d): %v", i+1, err)
@@ -134,8 +148,14 @@ func (e *Engine) Run(ctx context.Context, goal string) (*ExecutionTrace, error) 
 				}
 			}
 
-			// 执行工具调用
+			// 执行工具调用（带追踪 span，工具层错误同样标记为 error 状态）
+			toolSpan := e.startSpan(trace.TaskID, "tool."+tc.Name, nil)
 			result, err := e.toolRegistry.Call(ctx, tc.Name, args)
+			spanErr := err
+			if spanErr == nil && result.Error != "" {
+				spanErr = fmt.Errorf("%s", result.Error)
+			}
+			e.endSpan(toolSpan, spanErr)
 			callFailed := false
 			if err != nil {
 				step.Observation = fmt.Sprintf("工具调用失败: %v", err)

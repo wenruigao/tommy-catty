@@ -6,7 +6,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -284,18 +283,15 @@ func initLLMGateway(cfg *config.Config) *llm.Gateway {
 	return gw
 }
 
-// initSecurityEngine 初始化安全策略引擎
+// initSecurityEngine 初始化安全策略引擎。
+// 采用"YAML 优先、内置模板兜底"策略：policy.yaml 存在时仅加载 YAML 配置，
+// 缺失或无策略时才回退到内置默认模板，避免同名策略双重加载。
 func initSecurityEngine(cfg *config.Config) *security.Engine {
 	eng := security.NewEngine()
 
-	for _, p := range security.DefaultPolicies() {
-		eng.AddPolicy(p)
-	}
-
-	if data, err := os.ReadFile(cfg.PolicyFile); err == nil {
-		if err := eng.LoadFromYAML(data); err != nil {
-			fmt.Printf("  ⚠️  策略文件解析失败: %v\n", err)
-		}
+	data, _ := os.ReadFile(cfg.PolicyFile)
+	if err := eng.LoadPolicies(data); err != nil {
+		fmt.Printf("  ⚠️  策略文件解析失败，已回退内置默认策略: %v\n", err)
 	}
 
 	return eng
@@ -397,75 +393,13 @@ func checkDecisions(decisions []security.Decision) bool {
 	return false
 }
 
-// skillTraceData 与 internal/skill 的 traceData 结构对应的 JSON 结构，
-// 用于把引擎执行追踪序列化为 Skill 生成器可解析的格式。
-type skillTraceData struct {
-	TraceID     string           `json:"trace_id"`
-	TaskSummary string           `json:"task_summary"`
-	Steps       []skillTraceStep `json:"steps"`
-	Tools       []string         `json:"tools"`
-}
-
-// skillTraceStep 与 internal/skill 的 traceStep 结构对应。
-type skillTraceStep struct {
-	Order    int    `json:"order"`
-	Action   string `json:"action"`
-	ToolName string `json:"tool_name"`
-	Input    string `json:"input"`
-	Output   string `json:"output"`
-	Success  bool   `json:"success"`
-}
-
-// buildTraceJSON 把引擎执行追踪转换为 Skill 生成器期望的 JSON。
-// 转换失败时返回错误（调用方静默忽略即可）。
-func buildTraceJSON(result *engine.ExecutionTrace) (string, error) {
-	data := skillTraceData{
-		TraceID:     result.TaskID,
-		TaskSummary: result.Goal,
-	}
-	toolSet := make(map[string]bool)
-	for i, step := range result.Steps {
-		ts := skillTraceStep{Order: i + 1, Success: true}
-		switch {
-		case step.Action != "":
-			ts.Action = "call_tool"
-			ts.ToolName = step.Action
-			if input, err := json.Marshal(step.ActionInput); err == nil {
-				ts.Input = string(input)
-			}
-			ts.Output = step.Observation
-			// 执行错误/调用被拦截的步骤标记为失败
-			if strings.HasPrefix(step.Observation, "工具执行错误") ||
-				strings.HasPrefix(step.Observation, "工具调用失败") ||
-				strings.HasPrefix(step.Observation, "调用被拦截") {
-				ts.Success = false
-			}
-			toolSet[step.Action] = true
-		case step.IsFinal:
-			ts.Action = "final_answer"
-			ts.Output = step.FinalAnswer
-		default:
-			ts.Action = "think"
-			ts.Output = step.Thought
-		}
-		data.Steps = append(data.Steps, ts)
-	}
-	for name := range toolSet {
-		data.Tools = append(data.Tools, name)
-	}
-	out, err := json.Marshal(data)
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}
-
-// tryGenerateSkill 尝试从执行结果自动生成 Skill
+// tryGenerateSkill 尝试从执行结果自动生成 Skill 并持久化。
+// 追踪转换逻辑复用 skill.BuildTraceJSON（与 HTTP 模式一致）。
 func tryGenerateSkill(gen *skill.Generator, result *engine.ExecutionTrace) {
 	if len(result.Steps) < 3 {
 		return
 	}
-	traceJSON, err := buildTraceJSON(result)
+	traceJSON, err := skill.BuildTraceJSON(result)
 	if err != nil {
 		return
 	}
@@ -473,10 +407,12 @@ func tryGenerateSkill(gen *skill.Generator, result *engine.ExecutionTrace) {
 	if err != nil {
 		return
 	}
-	if err := gen.ValidateSkill(s); err != nil {
+	// 持久化：缺少 Save 会导致技能丢失，/skills 永远为空、匹配器无技能可用
+	if err := gen.Save(s); err != nil {
+		fmt.Printf("  ⚠️  Skill 持久化失败: %v\n", err)
 		return
 	}
-	fmt.Printf("  🧠 已自动生成 Skill「%s」\n", s.Name)
+	fmt.Printf("  🧠 已自动生成并持久化 Skill「%s」\n", s.Name)
 }
 
 // runDoctor 执行完整健康自检

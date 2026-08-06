@@ -60,20 +60,23 @@ func DefaultPolicies() []Policy {
 				NotifySeverity: "warning",
 			},
 		},
-		// 4. 办公时间限制：高风险工具仅允许在工作时间使用
+		// 4. 办公时间限制：高风险工具仅允许在工作时间使用。
+		// 引擎语义为"条件命中即执行效果"，因此条件必须描述"禁止窗口"：
+		// 非工作时间 18:00-09:00（跨午夜写法）命中即 deny。
+		// 若条件写成工作时间 09:00-18:00，会导致白天封禁、夜间放行（语义反转）。
 		{
 			ID:          "office-hours",
 			Name:        "办公时间限制",
-			Description: "L3 高风险工具仅允许在 09:00-18:00 工作时间内使用",
+			Description: "L3 高风险工具仅允许在 09:00-18:00 工作时间内使用，非工作时间禁止",
 			Priority:    4,
 			Enabled:     true,
 			When: PolicyCondition{
 				ToolRisk:  []string{"L3"},
-				TimeRange: "09:00-18:00",
+				TimeRange: "18:00-09:00",
 			},
 			Then: PolicyAction{
 				Effect:         EffectDeny,
-				Message:        "高风险工具仅允许在工作时间(09:00-18:00)内使用",
+				Message:        "当前为非工作时间，高风险工具已禁止（仅允许 09:00-18:00 工作时间使用）",
 				NotifySeverity: "warning",
 			},
 		},

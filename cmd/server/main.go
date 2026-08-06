@@ -19,6 +19,7 @@ import (
 	"github.com/tommy-cat/agent/config"
 	"github.com/tommy-cat/agent/internal/bootstrap"
 	"github.com/tommy-cat/agent/internal/ctxmgr"
+	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
 	"github.com/tommy-cat/agent/internal/search"
 	"github.com/tommy-cat/agent/internal/security"
@@ -78,13 +79,11 @@ func main() {
 		fmt.Printf("  ⚠️  %s\n", w)
 	}
 
-	// 初始化安全策略引擎
+	// 初始化安全策略引擎（"YAML 优先、内置模板兜底"，避免同名策略双重加载）
 	secEngine := security.NewEngine()
-	for _, p := range security.DefaultPolicies() {
-		secEngine.AddPolicy(p)
-	}
-	if data, err := os.ReadFile(cfg.PolicyFile); err == nil {
-		_ = secEngine.LoadFromYAML(data)
+	policyData, _ := os.ReadFile(cfg.PolicyFile)
+	if err := secEngine.LoadPolicies(policyData); err != nil {
+		log.Printf("警告: 策略文件解析失败，已回退内置默认策略: %v", err)
 	}
 
 	// 工具调用安全门禁：HTTP 模式无法交互审批，require_approval 一律自动拒绝
@@ -103,8 +102,10 @@ func main() {
 	// 最终输出安全门禁（敏感信息脱敏、输出审查）
 	outputGate := session.NewOutputGateAdapter(secEngine)
 
-	// 初始化 Skill 系统
-	_ = skill.NewStore(cfg.SkillStorePath)
+	// 初始化 Skill 系统（store/matcher/generator 均需接入会话，否则整个 Skill 系统失效）
+	skillStore := skill.NewStore(cfg.SkillStorePath)
+	skillMatcher := skill.NewMatcher(skillStore)
+	skillGen := skill.NewGenerator(skillStore)
 
 	// 追踪 JSONL 导出（配置为空则禁用）
 	var traceExporter *trace.Exporter
@@ -167,6 +168,33 @@ func main() {
 		SoulMD:          soulMD,
 		UserProfilesDir: cfg.Persona.UserProfilesDir,
 		Profiler:        profiler,
+		// Skill 匹配：命中时将已验证的执行经验拼接到目标之前
+		SkillHintProvider: func(input string) string {
+			if matched, score := skillMatcher.Match(input); matched != nil && score > 0.6 {
+				log.Printf("匹配到 Skill %q（置信度 %.0f%%），将参考其执行流程", matched.Name, score*100)
+				return "可参考以下已验证的执行经验：\n" + matched.PromptHints
+			}
+			return ""
+		},
+		// 任务完成后自动生成并持久化 Skill（与 CLI 模式口径一致：步骤数 >= 3）
+		OnTaskComplete: func(result *engine.ExecutionTrace) {
+			if len(result.Steps) < 3 {
+				return
+			}
+			traceJSON, err := skill.BuildTraceJSON(result)
+			if err != nil {
+				return
+			}
+			s, err := skillGen.GenerateFromTrace(traceJSON)
+			if err != nil {
+				return
+			}
+			if err := skillGen.Save(s); err != nil {
+				log.Printf("警告: Skill 持久化失败: %v", err)
+				return
+			}
+			log.Printf("已自动生成并持久化 Skill %q", s.Name)
+		},
 		RateLimit: session.RateLimitConfig{
 			RequestsPerMinute: cfg.Session.RequestsPerMinute,
 		},

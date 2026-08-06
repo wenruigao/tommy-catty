@@ -68,6 +68,37 @@ func (e *Engine) LoadFromYAML(data []byte) error {
 	return nil
 }
 
+// PolicyCount 返回当前已加载的策略数量。
+func (e *Engine) PolicyCount() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.policies)
+}
+
+// LoadPolicies 按"YAML 优先、内置模板兜底"加载安全策略：
+// YAML 数据存在且解析出至少一条策略时仅使用 YAML 配置；
+// YAML 缺失、无策略或解析失败时回退加载内置默认模板，
+// 避免同名策略被双重加载导致重复与语义互相干扰。
+// YAML 解析失败时返回错误供调用方记录，同时已回退加载默认模板。
+func (e *Engine) LoadPolicies(yamlData []byte) error {
+	if len(yamlData) > 0 {
+		err := e.LoadFromYAML(yamlData)
+		if err == nil && e.PolicyCount() > 0 {
+			return nil
+		}
+		if err != nil {
+			for _, p := range DefaultPolicies() {
+				e.AddPolicy(p)
+			}
+			return err
+		}
+	}
+	for _, p := range DefaultPolicies() {
+		e.AddPolicy(p)
+	}
+	return nil
+}
+
 // Evaluate 评估检查点，返回匹配的策略决策（按优先级排序，deny 短路）
 func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 	e.mu.RLock()
