@@ -159,6 +159,7 @@ llm:
 | `/skills` | 列出所有已生成的 Skill |
 | `/skill <id>` | 查看 Skill 详情 |
 | `/policies` | 查看已加载的安全策略 |
+| `/config` | 查看/管理配置（get/set/unset/use/path，持久化到 `config.local.yaml` 覆盖层） |
 | `/trace` | 查看最近一次执行追踪 |
 | `/clear` | 清空会话记忆 |
 
