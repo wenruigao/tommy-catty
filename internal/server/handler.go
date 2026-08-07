@@ -4,13 +4,22 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
+	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/tommy-cat/agent/internal/security"
 	"github.com/tommy-cat/agent/internal/session"
 )
 
 // Handler 持有 HTTP API 所需的共享依赖。
 type Handler struct {
 	SessionMgr *session.SessionManager
+
+	// Meter Token 计量器（网关全局口径），为 /api/v1/usage 提供数据；nil 表示不暴露
+	Meter *llm.Meter
+
+	// SecEngine 安全策略引擎，任务完成后评估 task_end 检查点（携带 Cost，供 cost-guard）；nil 则跳过
+	SecEngine *security.Engine
 }
 
 // NewHandler 创建 HTTP handler。
@@ -24,6 +33,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/history", h.handleHistory)
 	mux.HandleFunc("POST /api/v1/clear", h.handleClear)
 	mux.HandleFunc("GET /api/v1/health", h.handleHealth)
+	mux.HandleFunc("GET /api/v1/usage", h.handleUsage)
 }
 
 // --- Request/Response types ---
@@ -105,6 +115,16 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// task_end 策略评估（携带 Cost 估算，供 cost-guard 等成本策略；与 CLI 模式口径一致）
+	if h.SecEngine != nil {
+		h.SecEngine.Evaluate(security.Checkpoint{
+			Type:      "task_end",
+			UserID:    userID,
+			Cost:      float64(result.TokenUsage) * llm.CostPerToken,
+			Timestamp: time.Now(),
+		})
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -158,6 +178,30 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":          "ok",
 		"active_sessions": h.SessionMgr.ActiveCount(),
+	})
+}
+
+// handleUsage 返回网关级 Token 用量与预算（全局口径；per-user 频控配额由会话层独立执行）。
+func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
+	if UserIDFromContext(r.Context()) == "" {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
+	if h.Meter == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"enabled": false})
+		return
+	}
+	summary := h.Meter.Summary()
+	used, limit, exceeded := h.Meter.CheckBudget()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled":         true,
+		"summary":         summary,
+		"cache_hit_ratio": summary.CacheHitRatio(),
+		"daily_budget": map[string]interface{}{
+			"used":     used,
+			"limit":    limit,
+			"exceeded": exceeded,
+		},
 	})
 }
 

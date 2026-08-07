@@ -91,10 +91,12 @@ func main() {
 	// 最终输出安全门禁（敏感信息脱敏、输出审查）
 	outputGate := session.NewOutputGateAdapter(secEngine)
 
-	// 初始化 Skill 系统
+	// 初始化 Skill 系统（版本快照 + 生成门控，与 HTTP 模式口径一致）
 	skillStore := skill.NewStore(cfg.SkillStorePath)
 	skillMatcher := skill.NewMatcher(skillStore)
 	skillGen := skill.NewGenerator(skillStore)
+	skillGen.SetVersionManager(skill.NewVersionManager())
+	genGate := skill.NewGenerationGate()
 
 	// 初始化追踪器（CLI 模式全局）
 	tracer := trace.NewTracer()
@@ -249,11 +251,11 @@ func main() {
 		secEngine.Evaluate(security.Checkpoint{
 			Type:   "task_end",
 			UserID: "local",
-			Cost:   float64(result.TokenUsage) * 0.00001,
+			Cost:   float64(result.TokenUsage) * llm.CostPerToken,
 		})
 
-		// 尝试自动生成 Skill
-		tryGenerateSkill(skillGen, result)
+		// 尝试自动生成 Skill（经 GenerationGate 门控）
+		tryGenerateSkill(skillGen, genGate, result)
 	}
 }
 
@@ -397,8 +399,11 @@ func checkDecisions(decisions []security.Decision) bool {
 
 // tryGenerateSkill 尝试从执行结果自动生成 Skill 并持久化。
 // 追踪转换逻辑复用 skill.BuildTraceJSON（与 HTTP 模式一致）。
-func tryGenerateSkill(gen *skill.Generator, result *engine.ExecutionTrace) {
-	if len(result.Steps) < 3 {
+// 经 GenerationGate 门控：goal 指纹去重 + 步骤数 >= 3 + 耗时 >= 30s + 日配额 10，
+// 避免相似任务重复执行时持续产出近似重复的 Skill。
+func tryGenerateSkill(gen *skill.Generator, gate *skill.GenerationGate, result *engine.ExecutionTrace) {
+	fingerprint := skill.GoalFingerprint(result.Goal)
+	if !gate.ShouldGenerate(fingerprint, len(result.Steps), result.EndTime.Sub(result.StartTime)) {
 		return
 	}
 	traceJSON, err := skill.BuildTraceJSON(result)
@@ -414,6 +419,7 @@ func tryGenerateSkill(gen *skill.Generator, result *engine.ExecutionTrace) {
 		fmt.Printf("  ⚠️  Skill 持久化失败: %v\n", err)
 		return
 	}
+	gate.MarkGenerated(fingerprint)
 	fmt.Printf("  🧠 已自动生成并持久化 Skill「%s」\n", s.Name)
 }
 

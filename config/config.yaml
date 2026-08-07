@@ -30,6 +30,16 @@ llm:
     success_threshold: 2        # 半开状态下连续成功多少次后恢复
     open_timeout_s: 60          # 熔断后多久进入半开状态（秒）
 
+  # ── 语义缓存（L1 精确哈希层，缓存键含工具列表；L2 向量相似层属 P2 未实现）──
+  # cache:
+  #   enabled: true               # 显式启用（缺省关闭）
+  #   capacity: 500               # 缓存条目容量
+  #   ttl: "10m"                  # 过期时间
+
+  # ── Token 计量/预算（计量始终启用，用量经 GET /api/v1/usage 暴露）──
+  # meter:
+  #   daily_token_limit: 1000000  # 每日 Token 预算（<=0 不限），达 80% 时日志预警
+
   # 模型供应商列表 — 按需增删，无需改代码
   providers:
     mimo:
@@ -159,6 +169,14 @@ work_dir: "."
 #   soul_md_path: "config/soul.md"          # Agent 人格与对话风格文件
 #   user_profiles_dir: "data/users"         # 用户画像（user.md）存放目录
 #   profile_update_interval_runs: 3         # 每完成多少次任务更新一次用户画像
+
+# ────────────────────────────────────────────────────────────
+# db_query 查询结果缓存（缺省启用：容量 200 / TTL 5 分钟）
+# ────────────────────────────────────────────────────────────
+# db_query_cache:
+#   enabled: true                 # 置 false 可禁用
+#   capacity: 200                 # 缓存条目容量
+#   ttl: "5m"                     # 过期时间
 
 # ────────────────────────────────────────────────────────────
 # 数据库只读查询（db_query 工具）

@@ -14,6 +14,8 @@ import (
 type Generator struct {
 	// store 技能存储实例
 	store *Store
+	// versions 版本管理器（可选）：覆盖保存前留档历史快照，支持回滚
+	versions *VersionManager
 }
 
 // NewGenerator 创建一个新的技能生成器
@@ -27,7 +29,25 @@ func NewGenerator(store *Store) *Generator {
 // GenerateFromTrace 生成并通过校验的技能必须调用 Save，
 // 否则技能不会落盘，匹配器永远无技能可用。
 func (g *Generator) Save(s *Skill) error {
+	// 覆盖前记录历史快照（变更前内容），为版本回滚提供依据
+	if g.versions != nil {
+		if existing, ok := g.store.Get(s.ID); ok {
+			if data, jerr := json.Marshal(existing); jerr == nil {
+				g.versions.Snapshot(s.ID, g.versions.LatestVersion(s.ID)+1, string(data), "auto-extract", "覆盖前快照")
+			}
+		}
+	}
 	return g.store.Save(s)
+}
+
+// SetVersionManager 设置版本管理器（nil 表示不记录版本快照）。
+func (g *Generator) SetVersionManager(vm *VersionManager) {
+	g.versions = vm
+}
+
+// Versions 返回版本管理器（可能为 nil）。
+func (g *Generator) Versions() *VersionManager {
+	return g.versions
 }
 
 // traceData 表示执行追踪的 JSON 结构

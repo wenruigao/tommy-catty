@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite" // 注册 sqlite 驱动（用于测试）
 )
@@ -145,5 +146,57 @@ func TestEndToEndUnknownDatasource(t *testing.T) {
 	})
 	if res.Error == "" {
 		t.Fatal("expected unknown datasource error")
+	}
+}
+
+// TestEndToEndQueryCache 验证 Execute 接入 QueryCache：相同查询第二次命中缓存，
+// max_rows 覆盖时不命中。
+func TestEndToEndQueryCache(t *testing.T) {
+	pool := setupTestPool(t)
+	defer pool.Close()
+
+	tool := NewDBQueryToolWithCache(pool, NewQueryCache(10, time.Minute))
+	args := map[string]interface{}{
+		"datasource": "test",
+		"sql":        "SELECT id, name FROM users ORDER BY id",
+	}
+
+	res1, err := tool.Execute(context.Background(), args)
+	if err != nil || res1.Error != "" {
+		t.Fatalf("first execute: err=%v resErr=%s", err, res1.Error)
+	}
+	if _, hit := res1.Metadata["cache"]; hit {
+		t.Error("首次查询不应命中缓存")
+	}
+
+	res2, err := tool.Execute(context.Background(), args)
+	if err != nil || res2.Error != "" {
+		t.Fatalf("second execute: err=%v resErr=%s", err, res2.Error)
+	}
+	if res2.Metadata["cache"] != "hit" {
+		t.Errorf("第二次相同查询应命中缓存，metadata=%v", res2.Metadata)
+	}
+	if !strings.Contains(res2.Output, "alice") {
+		t.Errorf("缓存命中时输出应一致，got:\n%s", res2.Output)
+	}
+	if hits, _, _ := tool.cache.Stats(); hits != 1 {
+		t.Errorf("cache hits: got %d, want 1", hits)
+	}
+
+	// max_rows 覆盖改变行数上限，不得复用缓存
+	argsOverride := map[string]interface{}{
+		"datasource": "test",
+		"sql":        "SELECT id, name FROM users ORDER BY id",
+		"max_rows":   1,
+	}
+	res3, err := tool.Execute(context.Background(), argsOverride)
+	if err != nil || res3.Error != "" {
+		t.Fatalf("override execute: err=%v resErr=%s", err, res3.Error)
+	}
+	if res3.Metadata["cache"] == "hit" {
+		t.Error("max_rows 覆盖的查询不应命中缓存")
+	}
+	if res3.Metadata["row_count"] != 1 {
+		t.Errorf("row_count: got %v, want 1", res3.Metadata["row_count"])
 	}
 }

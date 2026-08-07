@@ -96,6 +96,8 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 	}
 
 	working := memory.NewWorkingMemory(memSize)
+	// P2：长期记忆（情景/语义/向量库）尚未实现，此处传 nil 仅使用工作记忆；
+	// memory/conflict.go（时间戳优先/置信度衰减/矛盾检测）为其预留，届时在记忆写入/检索链路接线
 	combined := memory.NewCombinedMemory(working, nil)
 	ctxMgr := ctxmgr.NewManager(deps.CtxConfig, deps.Summarizer)
 

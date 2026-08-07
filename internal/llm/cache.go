@@ -5,6 +5,7 @@ package llm
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,10 +42,21 @@ func NewSemanticCache(capacity int, ttl time.Duration) *SemanticCache {
 	}
 }
 
-// cacheKey 计算请求的缓存键（SHA-256 of normalized prompt）。
+// cacheKey 计算请求的缓存键（SHA-256 of model + tools + normalized prompt）。
 func cacheKey(req ChatRequest) string {
 	var sb strings.Builder
 	sb.WriteString(req.Model)
+	sb.WriteByte('|')
+	// 工具列表参与缓存键：不同工具集会改变模型可用动作，
+	// 不计入键会在切换工具集时产生错误命中
+	if len(req.Tools) > 0 {
+		names := make([]string, 0, len(req.Tools))
+		for _, td := range req.Tools {
+			names = append(names, td.Name)
+		}
+		sort.Strings(names)
+		sb.WriteString(strings.Join(names, ","))
+	}
 	sb.WriteByte('|')
 	for _, msg := range req.Messages {
 		sb.WriteString(msg.Role)

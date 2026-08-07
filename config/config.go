@@ -43,6 +43,9 @@ type Config struct {
 	// Databases 数据库只读查询数据源配置（key 为数据源名称）
 	Databases map[string]DatabaseEntry `yaml:"databases"`
 
+	// DBQueryCache db_query 查询结果缓存配置（nil 时默认启用：容量 200 / TTL 5 分钟）
+	DBQueryCache *DBQueryCacheConfig `yaml:"db_query_cache"`
+
 	// KnowledgeBases 本地知识库配置
 	KnowledgeBases []KnowledgeBaseEntry `yaml:"knowledge_bases"`
 
@@ -143,6 +146,19 @@ type LLMConfig struct {
 
 	// CircuitBreaker 熔断器配置（直接使用 llm 包的类型）
 	CircuitBreaker *llm.CircuitBreakerYAMLConfig `yaml:"circuit_breaker"`
+
+	// Cache 语义缓存配置（可选，仅 L1 精确哈希层；L2 向量相似层属 P2）
+	Cache *llm.CacheYAMLConfig `yaml:"cache"`
+
+	// Meter Token 计量/预算配置（可选；计量始终启用，此处控制日预算）
+	Meter *llm.MeterYAMLConfig `yaml:"meter"`
+}
+
+// DBQueryCacheConfig db_query 查询结果缓存配置（跨数据源共享一个缓存实例）。
+type DBQueryCacheConfig struct {
+	Enabled  bool   `yaml:"enabled"`  // 显式置 false 才禁用（缺省启用）
+	Capacity int    `yaml:"capacity"` // 缓存条目容量（默认 200）
+	TTL      string `yaml:"ttl"`      // 过期时间，如 "5m"（默认 5 分钟）
 }
 
 // ProviderEntry 单个模型供应商的配置条目
@@ -417,6 +433,8 @@ func (c *Config) ToGatewayConfig() llm.GatewayConfig {
 		FallbackProvider: c.LLM.FallbackProvider,
 		Retry:            c.LLM.Retry,
 		CircuitBreaker:   c.LLM.CircuitBreaker,
+		Cache:            c.LLM.Cache,
+		Meter:            c.LLM.Meter,
 	}
 }
 

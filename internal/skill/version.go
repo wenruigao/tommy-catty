@@ -2,7 +2,10 @@
 package skill
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -12,17 +15,17 @@ const MaxVersionHistory = 10
 
 // VersionSnapshot Skill 历史版本快照。
 type VersionSnapshot struct {
-	Version    int       `json:"version"`
-	Content    string    `json:"content"`     // Skill 完整定义（JSON）
-	ChangedBy  string    `json:"changed_by"`  // auto-optimize | manual-edit | rollback
-	ChangedAt  time.Time `json:"changed_at"`
-	Note       string    `json:"note"`
+	Version   int       `json:"version"`
+	Content   string    `json:"content"`    // Skill 完整定义（JSON）
+	ChangedBy string    `json:"changed_by"` // auto-optimize | manual-edit | rollback
+	ChangedAt time.Time `json:"changed_at"`
+	Note      string    `json:"note"`
 }
 
 // VersionManager 管理 Skill 的版本历史（内存，随 Store 持久化）。
 type VersionManager struct {
-	mu       sync.RWMutex
-	history  map[string][]VersionSnapshot // skillID -> 版本历史（升序）
+	mu      sync.RWMutex
+	history map[string][]VersionSnapshot // skillID -> 版本历史（升序）
 }
 
 // NewVersionManager 创建版本管理器。
@@ -93,9 +96,9 @@ type GenerationGate struct {
 	mu             sync.Mutex
 	dailyCount     int
 	dailyReset     time.Time
-	MaxDaily       int           // 每日最大生成次数（默认 10）
-	MinSteps       int           // 最少执行步骤（默认 3）
-	MinDuration    time.Duration // 最短耗时（默认 30s）
+	MaxDaily       int             // 每日最大生成次数（默认 10）
+	MinSteps       int             // 最少执行步骤（默认 3）
+	MinDuration    time.Duration   // 最短耗时（默认 30s）
 	GeneratedGoals map[string]bool // 已生成过 Skill 的 goal 指纹
 }
 
@@ -151,4 +154,12 @@ func (g *GenerationGate) resetDailyIfNeeded() {
 		g.dailyReset = today
 		g.dailyCount = 0
 	}
+}
+
+// GoalFingerprint 计算目标的规范化指纹（小写 + 空白折叠后的 SHA-256），
+// 供 GenerationGate 去重：相似目标不会重复触发 Skill 生成。
+func GoalFingerprint(goal string) string {
+	normalized := strings.ToLower(strings.Join(strings.Fields(goal), " "))
+	h := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(h[:])
 }

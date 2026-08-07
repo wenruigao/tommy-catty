@@ -120,6 +120,9 @@ func main() {
 	skillStore := skill.NewStore(cfg.SkillStorePath)
 	skillMatcher := skill.NewMatcher(skillStore)
 	skillGen := skill.NewGenerator(skillStore)
+	// Skill 版本快照（覆盖前留档，支持回滚）与生成门控（指纹去重/步骤/耗时/日配额）
+	skillGen.SetVersionManager(skill.NewVersionManager())
+	genGate := skill.NewGenerationGate()
 
 	// 追踪 JSONL 导出（配置为空则禁用）
 	var traceExporter *trace.Exporter
@@ -201,9 +204,11 @@ func main() {
 			}
 			return ""
 		},
-		// 任务完成后自动生成并持久化 Skill（与 CLI 模式口径一致：步骤数 >= 3）
+		// 任务完成后自动生成并持久化 Skill（与 CLI 模式一致，经 GenerationGate 门控：
+		// goal 指纹去重 + 步骤数 >= 3 + 耗时 >= 30s + 日配额 10，避免产出近似重复 Skill）
 		OnTaskComplete: func(result *engine.ExecutionTrace) {
-			if len(result.Steps) < 3 {
+			fingerprint := skill.GoalFingerprint(result.Goal)
+			if !genGate.ShouldGenerate(fingerprint, len(result.Steps), result.EndTime.Sub(result.StartTime)) {
 				return
 			}
 			traceJSON, err := skill.BuildTraceJSON(result)
@@ -218,6 +223,7 @@ func main() {
 				log.Printf("警告: Skill 持久化失败: %v", err)
 				return
 			}
+			genGate.MarkGenerated(fingerprint)
 			log.Printf("已自动生成并持久化 Skill %q", s.Name)
 		},
 		RateLimit: session.RateLimitConfig{
@@ -236,6 +242,8 @@ func main() {
 	// 构建 HTTP 路由
 	mux := http.NewServeMux()
 	handler := server.NewHandler(sessionMgr)
+	handler.Meter = gateway.Meter() // /api/v1/usage 用量端点数据源（网关全局口径）
+	handler.SecEngine = secEngine   // task_end 成本评估（cost-guard）
 	handler.RegisterRoutes(mux)
 
 	// 包装认证中间件（api_key / jwt 模式必须配置密钥，缺失时拒绝启动）
@@ -294,7 +302,7 @@ func main() {
 	}()
 
 	fmt.Printf("  🚀 HTTP 服务启动于 %s (auth: %s)\n", addr, cfg.Server.AuthMode)
-	fmt.Println("  端点: POST /api/v1/chat | GET /api/v1/history | POST /api/v1/clear | GET /api/v1/health")
+	fmt.Println("  端点: POST /api/v1/chat | GET /api/v1/history | POST /api/v1/clear | GET /api/v1/health | GET /api/v1/usage")
 
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		fmt.Printf("  ❌ 服务异常退出: %v\n", err)
