@@ -272,6 +272,50 @@ type ChannelEntry struct {
 	// CallbackURL webhook 默认投递地址，支持 ${ENV_VAR} 引用
 	//（单次请求可用 callback_url 字段覆盖）
 	CallbackURL string `yaml:"callback_url"`
+
+	// ── 以下字段供各平台 adapter 使用（按需配置，缺省即不启用对应平台）──
+
+	// ClientID 钉钉应用 appKey，支持 ${ENV_VAR} 引用
+	ClientID string `yaml:"client_id"`
+
+	// ClientSecret 钉钉应用 appSecret（兼回调加签密钥），支持 ${ENV_VAR} 引用
+	ClientSecret string `yaml:"client_secret"`
+
+	// AppID 飞书 app_id / 微信公众号 appid / QQ AppID，支持 ${ENV_VAR} 引用
+	AppID string `yaml:"app_id"`
+
+	// AppSecret 飞书 app_secret / 微信公众号 appsecret / QQ AppSecret，支持 ${ENV_VAR} 引用
+	AppSecret string `yaml:"app_secret"`
+
+	// VerificationToken 飞书事件订阅验证令牌（可选），支持 ${ENV_VAR} 引用
+	VerificationToken string `yaml:"verification_token"`
+
+	// EncryptKey 飞书事件加密密钥（配置后强制校验 X-Lark-Signature），支持 ${ENV_VAR} 引用
+	EncryptKey string `yaml:"encrypt_key"`
+
+	// CorpID 企业微信企业 ID
+	CorpID string `yaml:"corp_id"`
+
+	// AgentID 企业微信自建应用 agentid
+	AgentID string `yaml:"agent_id"`
+
+	// AgentSecret 企业微信自建应用 secret，支持 ${ENV_VAR} 引用
+	AgentSecret string `yaml:"agent_secret"`
+
+	// EncodingAESKey 企业微信回调加密密钥（43 位，配置后支持加密回调），支持 ${ENV_VAR} 引用
+	EncodingAESKey string `yaml:"encoding_aes_key"`
+
+	// APIToken WhatsApp 出站 Cloud API 令牌（缺省复用 token），支持 ${ENV_VAR} 引用
+	APIToken string `yaml:"api_token"`
+
+	// PhoneNumberID WhatsApp Cloud API 的 phone_number_id（出站必填）
+	PhoneNumberID string `yaml:"phone_number_id"`
+
+	// APIBase 平台 API 基址（默认各平台官方端点，可指向代理）
+	APIBase string `yaml:"api_base"`
+
+	// PathPrefix 入站回调路由前缀（默认各渠道 /channels/<渠道名>）
+	PathPrefix string `yaml:"path_prefix"`
 }
 
 // MCPConfig MCP Server 接入配置。
@@ -463,6 +507,13 @@ func (c *Config) resolveEnvVars() {
 	for name, ch := range c.Channels {
 		ch.Token = resolveEnvVar(ch.Token)
 		ch.CallbackURL = resolveEnvVar(ch.CallbackURL)
+		ch.ClientSecret = resolveEnvVar(ch.ClientSecret)
+		ch.AppSecret = resolveEnvVar(ch.AppSecret)
+		ch.VerificationToken = resolveEnvVar(ch.VerificationToken)
+		ch.EncryptKey = resolveEnvVar(ch.EncryptKey)
+		ch.AgentSecret = resolveEnvVar(ch.AgentSecret)
+		ch.EncodingAESKey = resolveEnvVar(ch.EncodingAESKey)
+		ch.APIToken = resolveEnvVar(ch.APIToken)
 		c.Channels[name] = ch
 	}
 }
@@ -503,9 +554,53 @@ func (c *Config) Validate() error {
 		if !ch.Enabled {
 			continue
 		}
-		// webhook 渠道强制要求 token（与认证层"缺密钥即拒绝启动"的口径一致）
-		if name == "webhook" && ch.Token == "" {
-			return fmt.Errorf("config: 渠道 %q 已启用但缺少 token（不允许无认证端点）", name)
+		// 各渠道启用时必须配齐凭证（与认证层"缺密钥即拒绝启动"的口径一致）
+		var missing []string
+		switch name {
+		case "webhook", "telegram", "whatsapp":
+			if ch.Token == "" {
+				missing = append(missing, "token")
+			}
+		case "dingtalk":
+			if ch.ClientID == "" {
+				missing = append(missing, "client_id")
+			}
+			if ch.ClientSecret == "" {
+				missing = append(missing, "client_secret")
+			}
+		case "feishu", "qq":
+			if ch.AppID == "" {
+				missing = append(missing, "app_id")
+			}
+			if ch.AppSecret == "" {
+				missing = append(missing, "app_secret")
+			}
+		case "wechat", "微信":
+			if ch.AppID == "" {
+				missing = append(missing, "app_id")
+			}
+			if ch.AppSecret == "" {
+				missing = append(missing, "app_secret")
+			}
+			if ch.Token == "" {
+				missing = append(missing, "token")
+			}
+		case "wecom":
+			if ch.CorpID == "" {
+				missing = append(missing, "corp_id")
+			}
+			if ch.AgentID == "" {
+				missing = append(missing, "agent_id")
+			}
+			if ch.AgentSecret == "" {
+				missing = append(missing, "agent_secret")
+			}
+			if ch.Token == "" {
+				missing = append(missing, "token")
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("config: 渠道 %q 已启用但缺少必填凭证: %s（不允许无认证端点）", name, strings.Join(missing, ", "))
 		}
 	}
 	return nil

@@ -355,7 +355,8 @@ func (a *llmAdapter) Chat(ctx context.Context, messages []llm.Message, tools []l
 
 // buildChannels 按配置装配 Channel 接入层（对齐 OpenClaw 的 Channel 契约：
 // 统一注册、独立路由、独立鉴权）。无启用渠道时返回 nil（接入层完全不启动）。
-// 当前内置 webhook 通用渠道；其他渠道名待对应 adapter 实现，仅警告跳过。
+// 内置渠道：webhook（通用）/ dingtalk / feishu / wechat（微信）/ wecom /
+// telegram / whatsapp / qq，均为声明式配置即接入。
 func buildChannels(cfg *config.Config, sm *session.SessionManager, mux *http.ServeMux) *channel.Hub {
 	if len(cfg.Channels) == 0 {
 		return nil
@@ -368,6 +369,7 @@ func buildChannels(cfg *config.Config, sm *session.SessionManager, mux *http.Ser
 	)
 
 	enabled := 0
+	var names []string
 	for name, entry := range cfg.Channels {
 		if !entry.Enabled {
 			continue
@@ -386,29 +388,85 @@ func buildChannels(cfg *config.Config, sm *session.SessionManager, mux *http.Ser
 		}
 
 		var ch channel.Channel
+		var err error
 		switch name {
 		case "webhook":
-			wh, err := channel.NewWebhookChannel(channel.WebhookConfig{
+			ch, err = channel.NewWebhookChannel(channel.WebhookConfig{
 				Token:       entry.Token,
 				CallbackURL: entry.CallbackURL,
 			}, mux)
-			if err != nil {
-				log.Printf("警告: 渠道 %q 初始化失败: %v", name, err)
-				continue
-			}
-			ch = wh
+		case "dingtalk":
+			ch, err = channel.NewDingTalkChannel(channel.DingTalkConfig{
+				ClientID:     entry.ClientID,
+				ClientSecret: entry.ClientSecret,
+				PathPrefix:   entry.PathPrefix,
+				APIBase:      entry.APIBase,
+			}, mux)
+		case "feishu":
+			ch, err = channel.NewFeishuChannel(channel.FeishuConfig{
+				AppID:             entry.AppID,
+				AppSecret:         entry.AppSecret,
+				VerificationToken: entry.VerificationToken,
+				EncryptKey:        entry.EncryptKey,
+				PathPrefix:        entry.PathPrefix,
+				APIBase:           entry.APIBase,
+			}, mux)
+		case "wechat", "微信": // 微信公众号（wechat / 微信 为同一渠道的两种配置键）
+			ch, err = channel.NewWeChatChannel(channel.WeChatConfig{
+				AppID:      entry.AppID,
+				AppSecret:  entry.AppSecret,
+				Token:      entry.Token,
+				PathPrefix: entry.PathPrefix,
+				APIBase:    entry.APIBase,
+			}, mux)
+		case "wecom":
+			ch, err = channel.NewWeComChannel(channel.WeComConfig{
+				CorpID:         entry.CorpID,
+				AgentID:        entry.AgentID,
+				AgentSecret:    entry.AgentSecret,
+				Token:          entry.Token,
+				EncodingAESKey: entry.EncodingAESKey,
+				PathPrefix:     entry.PathPrefix,
+				APIBase:        entry.APIBase,
+			}, mux)
+		case "telegram":
+			ch, err = channel.NewTelegramChannel(channel.TelegramConfig{
+				Token:   entry.Token,
+				APIBase: entry.APIBase,
+			})
+		case "whatsapp":
+			ch, err = channel.NewWhatsAppChannel(channel.WhatsAppConfig{
+				Token:         entry.Token,
+				APIToken:      entry.APIToken,
+				PhoneNumberID: entry.PhoneNumberID,
+				APIBase:       entry.APIBase,
+				PathPrefix:    entry.PathPrefix,
+			}, mux)
+		case "qq":
+			ch, err = channel.NewQQChannel(channel.QQConfig{
+				AppID:      entry.AppID,
+				AppSecret:  entry.AppSecret,
+				PathPrefix: entry.PathPrefix,
+				APIBase:    entry.APIBase,
+			}, mux)
 		default:
 			log.Printf("警告: 渠道 %q 尚无对应 adapter 实现，跳过", name)
 			continue
 		}
-		hub.Register(name, ch, cc)
+		if err != nil {
+			log.Printf("警告: 渠道 %q 初始化失败: %v", name, err)
+			continue
+		}
+		// 以 adapter 的规范渠道 ID 注册：配置键别名（如 微信→wechat）会话键稳定隔离
+		hub.Register(ch.Name(), ch, cc)
+		names = append(names, ch.Name())
 		enabled++
 	}
 
 	if enabled == 0 {
 		return nil
 	}
-	fmt.Printf("  📨 渠道接入层: 已启用 %d 个渠道（接收端点 POST /channels/webhook）\n", enabled)
+	fmt.Printf("  📨 渠道接入层: 已启用 %d 个渠道（%s）\n", enabled, strings.Join(names, ", "))
 	return hub
 }
 

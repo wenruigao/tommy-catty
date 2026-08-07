@@ -236,11 +236,19 @@ work_dir: "."
 # ────────────────────────────────────────────────────────────
 # Channel 接入层（通用渠道，对齐 OpenClaw 的 Channel 机制）
 # ────────────────────────────────────────────────────────────
-# key 为渠道名，当前内置 "webhook" 通用渠道（标准 HTTP 接收 +
-# callback_url 异步投递），任何系统（含 OpenClaw 类网关）可直接接入。
+# key 为渠道名，内置渠道（声明式配置即接入）：
+#   webhook   通用 HTTP 接收 + callback_url 异步投递（任何系统可直接接入）
+#   dingtalk  钉钉企业内部机器人（回调加签验证 + sessionWebhook/oTo 回复）
+#   feishu    飞书自建应用（url_verification 挑战 + 事件签名验证）
+#   wechat    微信公众号（echostr 接入校验 + XML 消息 + 客服消息回复），配置键也可写 "微信"
+#   wecom     企业微信自建应用（明文/AES 加密回调 + 应用消息回复）
+#   telegram  Telegram Bot（长轮询，无需公网回调；群聊仅响应 @ 消息）
+#   whatsapp  WhatsApp（Cloud API Webhook 格式 + 出站消息接口）
+#   qq        QQ 官方机器人（Webhook 回调 + ed25519 签名验证 + REST 回复）
 # 会话键为 "渠道名:用户/群ID"，与 HTTP X-User-ID 身份隔离，
 # per-user 限流、安全门禁与审计按会话键天然生效。
 # 未配置 channels 时接入层不启动，行为与旧版完全一致。
+# 各渠道启用时必填凭证缺失会拒绝启动（不允许无认证端点）。
 #
 # channels:
 #   webhook:
@@ -251,3 +259,49 @@ work_dir: "."
 #     group_mode: mention_only           # always | mention_only | never
 #     ack_message: "收到，处理中…"        # 受理提示（空则不发）
 #     request_timeout: 120s              # 单条消息执行超时
+#
+#   dingtalk:
+#     enabled: false
+#     client_id: "${DINGTALK_APP_KEY}"          # 必填，应用 appKey
+#     client_secret: "${DINGTALK_APP_SECRET}"   # 必填，兼回调加签密钥
+#     # path_prefix: /channels/dingtalk         # 管理端配置的回调地址路径
+#
+#   feishu:
+#     enabled: false
+#     app_id: "${FEISHU_APP_ID}"                # 必填
+#     app_secret: "${FEISHU_APP_SECRET}"        # 必填
+#     encrypt_key: "${FEISHU_ENCRYPT_KEY}"      # 建议配置（强制 X-Lark-Signature 校验）
+#     # verification_token: "${FEISHU_VERIFICATION_TOKEN}"  # 可选二次验证
+#
+#   wechat:
+#     enabled: false
+#     app_id: "${WECHAT_APP_ID}"                # 必填，公众号 appid
+#     app_secret: "${WECHAT_APP_SECRET}"        # 必填，公众号 appsecret
+#     token: "${WECHAT_TOKEN}"                  # 必填，公众平台回调 Token
+#     # 注意：公众平台仅支持明文消息模式（加密模式回调将被跳过）
+#
+#   wecom:
+#     enabled: false
+#     corp_id: "ww1234567890abcdef"             # 必填，企业 ID
+#     agent_id: "1000002"                       # 必填，自建应用 agentid
+#     agent_secret: "${WECOM_AGENT_SECRET}"     # 必填，自建应用 secret
+#     token: "${WECOM_TOKEN}"                   # 必填，回调 Token
+#     encoding_aes_key: "${WECOM_AES_KEY}"      # 可选（43 位，配置后支持加密回调）
+#
+#   telegram:
+#     enabled: false
+#     token: "${TELEGRAM_BOT_TOKEN}"            # 必填，BotFather 颁发的 Token
+#     # api_base: "https://api.telegram.org"    # 可指向代理
+#
+#   whatsapp:
+#     enabled: false
+#     token: "${WHATSAPP_WEBHOOK_TOKEN}"        # 必填，入站回调验证令牌
+#     phone_number_id: "123456789"              # 出站必填，Cloud API phone_number_id
+#     # api_token: "${WHATSAPP_API_TOKEN}"      # 出站令牌（缺省复用 token）
+#     # api_base: "https://graph.facebook.com/v19.0"  # 可指向 Twilio 等中转网关
+#
+#   qq:
+#     enabled: false
+#     app_id: "${QQ_APP_ID}"                    # 必填，开放平台 AppID
+#     app_secret: "${QQ_APP_SECRET}"            # 必填，兼派生 ed25519 签名密钥
+#     # 管理端回调地址填 /channels/qq，勾选 C2C/群 @ 消息事件
