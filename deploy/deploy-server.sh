@@ -89,7 +89,7 @@ do_start() {
         return 0
     fi
     [ -x "$BIN_PATH" ] || do_build
-    [ -f "$CONFIG_FILE" ] || { log "错误: 配置文件不存在: $CONFIG_FILE"; exit 1; }
+    [ -f "$CONFIG_FILE" ] || { log "错误: 配置文件不存在: ${CONFIG_FILE}"; exit 1; }
 
     # 提示：server 段未启用时进程会直接退出
     if ! grep -qE '^\s*mode:\s*"http"' "$CONFIG_FILE"; then
@@ -97,7 +97,7 @@ do_start() {
     fi
 
     mkdir -p "$RUN_DIR" "$LOG_DIR"
-    log "启动服务: $BIN_PATH（配置: $CONFIG_FILE）"
+    log "启动服务: ${BIN_PATH}（配置: ${CONFIG_FILE}）"
     nohup "$BIN_PATH" "$CONFIG_FILE" >>"$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     sleep 1

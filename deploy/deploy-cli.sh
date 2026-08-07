@@ -61,11 +61,19 @@ do_install() {
 }
 
 do_run() {
-    local cfg="${1:-$CONFIG_FILE}"
+    # 未传配置文件（或传入空串）时使用项目默认配置
+    local cfg="${1:-}"
+    if [ -z "$cfg" ]; then
+        cfg="$CONFIG_FILE"
+    fi
     [ -x "$BIN_PATH" ] || do_build
-    [ -f "$cfg" ] || { log "错误: 配置文件不存在: $cfg"; exit 1; }
-    log "启动 CLI（配置: $cfg），退出请输入 /quit"
-    # CLI 是交互式 REPL，必须前台运行并保持 stdin/tty
+    [ -f "$cfg" ] || { log "错误: 配置文件不存在: ${cfg}"; exit 1; }
+    log "启动 CLI（配置: ${cfg}），退出请输入 /quit"
+    # CLI 是交互式 REPL，必须前台运行并保持 stdin/tty；
+    # 使用项目默认配置时不传参数，二进制按自身默认路径加载
+    if [ "$cfg" = "$CONFIG_FILE" ]; then
+        exec "$BIN_PATH"
+    fi
     exec "$BIN_PATH" "$cfg"
 }
 
@@ -76,6 +84,6 @@ usage() {
 case "${1:-}" in
     build)   do_build ;;
     install) do_install ;;
-    run)     do_run "${2:-}" ;;
+    run)     shift; do_run "$@" ;;
     *)       usage; exit 1 ;;
 esac
