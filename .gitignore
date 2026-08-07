@@ -37,3 +37,7 @@ Thumbs.db
 
 # Data (runtime generated)
 data/skills.json
+
+# Deploy runtime artifacts
+deploy/run/
+deploy/logs/
