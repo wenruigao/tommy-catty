@@ -120,3 +120,17 @@ func (l *AuditLogger) LogAudit(cp Checkpoint, decisions []Decision) {
 		Content:    cp.Content,
 	})
 }
+
+// LogConfigChange 记录一次配置变更操作（CLI /config set/unset）：
+// 仅记录操作类型与键名，值不入日志（避免秘密落盘）。
+func (l *AuditLogger) LogConfigChange(userID, op, key string) {
+	if l == nil {
+		return
+	}
+	l.Log(auditEntry{
+		UserID:     userID,
+		Checkpoint: "config_change",
+		Effect:     op,
+		Content:    key,
+	})
+}

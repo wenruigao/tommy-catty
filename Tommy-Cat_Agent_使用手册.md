@@ -69,11 +69,31 @@ config.yaml 中一律写 `${VAR}` 引用，不要把真实 Key 写进配置文�
 | `/skills` | 列出所有 Skill |
 | `/skill <id>` | 查看 Skill 详情（id 取 `/skills` 输出的前 8 位） |
 | `/policies` | 查看已加载的安全策略 |
+| `/config` | 查看/管理配置（`get`/`set`/`unset`/`use`/`path`，见 3.1） |
 | `/trace` | 查看最近一次执行的追踪 span |
 | `/clear` | 清空会话记忆 |
 | `/quit` | 退出 |
 
 启动时自动执行快速自检（仅 Critical 级别），发现问题提示运行 `/doctor`。
+
+### 3.1 `/config` 运行时配置管理
+
+| 命令 | 作用 |
+|------|------|
+| `/config` | 列出全部可配置键：当前生效值 + 来源标记（`[local]`/`[config]`），密钥自动脱敏 |
+| `/config get <key>` | 查看单键详情（值、来源、说明） |
+| `/config set <key> <值>` | 设置并持久化 |
+| `/config unset <key>` | 移除覆盖，恢复主配置/默认值 |
+| `/config use <provider>` | 快捷切换默认模型供应商 |
+| `/config path` | 显示主配置文件与覆盖层文件路径 |
+
+**持久化机制（overlay 覆盖层）**：变更写入与主配置同目录的 `config.local.yaml`（已加入 `.gitignore`），主配置文件（含注释）永不改动。加载优先级：内置默认 < `config.yaml` < `config.local.yaml`。全部覆盖项清空后覆盖层文件自动删除。
+
+**键白名单**：仅常用标量键可经 `/config` 修改（LLM 供应商/缓存/计量、引擎、搜索、会话、画像、工作目录等约 20 个静态键 + 各供应商的 `model`/`base_url`/`max_tokens`/`timeout`/`api_key` 动态键）；channels/databases/mcp 等复杂结构仍手工编辑主配置。未知键报错并提示最相近键名，类型非法（int/duration/enum）给出中文错误。
+
+**密钥安全**：键名含 api_key/token/secret/dsn/password 的值显示为脱敏形式（`${ENV}` 引用原样展示）；以明文写入秘密键时给出警告（建议改用 `${ENV_VAR}` 引用）；set/unset 操作写入审计日志（仅记键名，值不落盘）。
+
+**生效方式**：变更立即写入文件并同步内存中的配置视图，但运行中的组件（Gateway/Engine 等）统一在**重启后生效**。
 
 ## 4. HTTP 服务模式
 

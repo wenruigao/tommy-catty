@@ -41,3 +41,10 @@ data/skills.json
 # Deploy runtime artifacts
 deploy/run/
 deploy/logs/
+
+# 配置覆盖层（CLI /config set 生成，本地个性化配置）
+config.local.yaml
+
+# 本地运行产物（审计日志、IDE 工具配置）
+data/audit.jsonl
+.qwen/

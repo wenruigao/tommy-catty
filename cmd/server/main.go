@@ -39,7 +39,7 @@ func main() {
 	if len(os.Args) > 1 {
 		cfgPath = os.Args[1]
 	}
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.LoadWithOverlay(cfgPath)
 	if err != nil {
 		fmt.Printf("  ⚠️  配置文件加载失败 (%v)，使用默认配置\n", err)
 		cfg = config.Default()

@@ -40,8 +40,15 @@ const banner = `
 func main() {
 	fmt.Print(banner)
 
-	// 加载配置
-	cfg := loadConfig()
+	// 加载配置（含覆盖层 config.local.yaml）
+	cfg, cfgPath := loadConfig()
+
+	// 安全审计日志（/config 变更与策略决策可追溯；路径为空则禁用）
+	auditLogger, aerr := security.NewAuditLogger(cfg.AuditLogPath)
+	if aerr != nil {
+		fmt.Printf("  ⚠️  审计日志初始化失败: %v\n", aerr)
+	}
+	defer auditLogger.Close()
 
 	// 初始化 LLM 网关
 	gateway := initLLMGateway(cfg)
@@ -77,6 +84,10 @@ func main() {
 
 	// 初始化安全策略引擎
 	secEngine := initSecurityEngine(cfg)
+	secEngine.SetAuditLogger(auditLogger)
+
+	// /config 命令执行器（覆盖层持久化）
+	cfgMgr := newConfigManager(cfgPath, cfg, auditLogger)
 
 	// 工具调用安全门禁（策略评估 + 终端交互式审批）
 	toolGate := session.NewToolGateAdapter(secEngine, interactiveApprover)
@@ -214,7 +225,7 @@ func main() {
 
 		// 命令处理
 		if strings.HasPrefix(input, "/") {
-			handleCommand(input, cfg, skillStore, skillMatcher, skillGen, secEngine, tracer, localSession)
+			handleCommand(input, cfg, skillStore, skillMatcher, skillGen, secEngine, tracer, localSession, cfgMgr)
 			continue
 		}
 
@@ -259,18 +270,18 @@ func main() {
 	}
 }
 
-// loadConfig 加载配置
-func loadConfig() *config.Config {
+// loadConfig 加载配置（主配置 + 覆盖层 config.local.yaml），并返回主配置路径
+func loadConfig() (*config.Config, string) {
 	cfgPath := "config/config.yaml"
 	if len(os.Args) > 1 {
 		cfgPath = os.Args[1]
 	}
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.LoadWithOverlay(cfgPath)
 	if err != nil {
 		fmt.Printf("  ⚠️  配置文件加载失败 (%v)，使用默认配置\n", err)
-		return config.Default()
+		return config.Default(), cfgPath
 	}
-	return cfg
+	return cfg, cfgPath
 }
 
 // initLLMGateway 初始化 LLM 网关
@@ -310,7 +321,7 @@ func buildSystemPrompt(cfg *config.Config) string {
 }
 
 // handleCommand 处理斜杠命令
-func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher *skill.Matcher, gen *skill.Generator, sec *security.Engine, tracer *trace.Tracer, sess *session.UserSession) {
+func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher *skill.Matcher, gen *skill.Generator, sec *security.Engine, tracer *trace.Tracer, sess *session.UserSession, cfgMgr *configManager) {
 	cmd := strings.Fields(input)
 	switch cmd[0] {
 	case "/quit", "/exit", "/q":
@@ -325,7 +336,8 @@ func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher
     /skill <id>    查看 Skill 详情
     /policies      列出安全策略
     /trace         查看最近一次执行的追踪信息
-    /clear         清空记忆`)
+    /clear         清空记忆
+    /config        查看/管理配置（get/set/unset/use/path）`)
 	case "/doctor":
 		runDoctor(cfg)
 	case "/skills":
@@ -348,6 +360,8 @@ func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher
 			fmt.Printf("  [%s] %s (%s) %s\n",
 				s.SpanID, s.Name, s.EndTime.Sub(s.StartTime).Round(1e6), s.Status)
 		}
+	case "/config":
+		handleConfigCommand(cmd[1:], cfgMgr)
 	case "/clear":
 		sess.ClearMemory()
 		fmt.Println("  记忆已清空。")
