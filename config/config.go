@@ -24,6 +24,10 @@ type Config struct {
 	// 安全策略文件路径
 	PolicyFile string `yaml:"policy_file"`
 
+	// AuditLogPath 安全审计日志 JSONL 落盘路径（空则禁用审计）：
+	// 记录 L2+ 工具调用与所有命中策略的决策（操作人/输入/审批可追溯）
+	AuditLogPath string `yaml:"audit_log_path"`
+
 	// Skill 存储路径
 	SkillStorePath string `yaml:"skill_store_path"`
 
@@ -39,6 +43,9 @@ type Config struct {
 	// Databases 数据库只读查询数据源配置（key 为数据源名称）
 	Databases map[string]DatabaseEntry `yaml:"databases"`
 
+	// DBQueryCache db_query 查询结果缓存配置（nil 时默认启用：容量 200 / TTL 5 分钟）
+	DBQueryCache *DBQueryCacheConfig `yaml:"db_query_cache"`
+
 	// KnowledgeBases 本地知识库配置
 	KnowledgeBases []KnowledgeBaseEntry `yaml:"knowledge_bases"`
 
@@ -50,6 +57,10 @@ type Config struct {
 
 	// Persona Agent 人格体系配置（agent.md / soul.md / 用户画像）
 	Persona PersonaConfig `yaml:"persona"`
+
+	// Channels 通用 Channel 接入层配置（key 为渠道名，如 webhook）：
+	// 对齐 OpenClaw 的 Channel 机制，声明式接入外部消息平台；未配置时接入层不启动
+	Channels map[string]ChannelEntry `yaml:"channels"`
 }
 
 // PersonaConfig Agent 人格体系配置
@@ -135,6 +146,19 @@ type LLMConfig struct {
 
 	// CircuitBreaker 熔断器配置（直接使用 llm 包的类型）
 	CircuitBreaker *llm.CircuitBreakerYAMLConfig `yaml:"circuit_breaker"`
+
+	// Cache 语义缓存配置（可选，仅 L1 精确哈希层；L2 向量相似层属 P2）
+	Cache *llm.CacheYAMLConfig `yaml:"cache"`
+
+	// Meter Token 计量/预算配置（可选；计量始终启用，此处控制日预算）
+	Meter *llm.MeterYAMLConfig `yaml:"meter"`
+}
+
+// DBQueryCacheConfig db_query 查询结果缓存配置（跨数据源共享一个缓存实例）。
+type DBQueryCacheConfig struct {
+	Enabled  bool   `yaml:"enabled"`  // 显式置 false 才禁用（缺省启用）
+	Capacity int    `yaml:"capacity"` // 缓存条目容量（默认 200）
+	TTL      string `yaml:"ttl"`      // 过期时间，如 "5m"（默认 5 分钟）
 }
 
 // ProviderEntry 单个模型供应商的配置条目
@@ -234,6 +258,80 @@ type ServerConfig struct {
 
 	// AuthJWTSecret JWT HS256 签名密钥（auth_mode 为 jwt 时必填），支持 ${ENV_VAR} 引用
 	AuthJWTSecret string `yaml:"auth_jwt_secret"`
+
+	// AuthUserID auth_mode 为 api_key 时绑定的固定用户身份（建议配置）：
+	// 非空时忽略客户端的 X-User-ID，防止同一密钥持有者互相冒充
+	AuthUserID string `yaml:"auth_user_id"`
+}
+
+// ChannelEntry 单个 Channel（渠道）的 YAML 配置条目（对应 internal/channel 接入层）。
+type ChannelEntry struct {
+	// Enabled 是否启用该渠道
+	Enabled bool `yaml:"enabled"`
+
+	// AllowUsers 允许使用的平台用户白名单（空或 ["*"] 表示不限制）
+	AllowUsers []string `yaml:"allow_users"`
+
+	// GroupMode 群消息模式：always | mention_only | never
+	//（mention 判断由渠道 adapter 侧完成，默认 mention_only）
+	GroupMode string `yaml:"group_mode"`
+
+	// AckMessage 受理提示（非空时收到消息先回一条，长任务体验关键）
+	AckMessage string `yaml:"ack_message"`
+
+	// RequestTimeout 单条消息执行超时（如 "120s"，默认 120s）
+	RequestTimeout string `yaml:"request_timeout"`
+
+	// Token 渠道接入令牌（webhook 渠道必填），支持 ${ENV_VAR} 引用
+	Token string `yaml:"token"`
+
+	// CallbackURL webhook 默认投递地址，支持 ${ENV_VAR} 引用
+	//（单次请求可用 callback_url 字段覆盖）
+	CallbackURL string `yaml:"callback_url"`
+
+	// ── 以下字段供各平台 adapter 使用（按需配置，缺省即不启用对应平台）──
+
+	// ClientID 钉钉应用 appKey，支持 ${ENV_VAR} 引用
+	ClientID string `yaml:"client_id"`
+
+	// ClientSecret 钉钉应用 appSecret（兼回调加签密钥），支持 ${ENV_VAR} 引用
+	ClientSecret string `yaml:"client_secret"`
+
+	// AppID 飞书 app_id / 微信公众号 appid / QQ AppID，支持 ${ENV_VAR} 引用
+	AppID string `yaml:"app_id"`
+
+	// AppSecret 飞书 app_secret / 微信公众号 appsecret / QQ AppSecret，支持 ${ENV_VAR} 引用
+	AppSecret string `yaml:"app_secret"`
+
+	// VerificationToken 飞书事件订阅验证令牌（可选），支持 ${ENV_VAR} 引用
+	VerificationToken string `yaml:"verification_token"`
+
+	// EncryptKey 飞书事件加密密钥（配置后强制校验 X-Lark-Signature），支持 ${ENV_VAR} 引用
+	EncryptKey string `yaml:"encrypt_key"`
+
+	// CorpID 企业微信企业 ID
+	CorpID string `yaml:"corp_id"`
+
+	// AgentID 企业微信自建应用 agentid
+	AgentID string `yaml:"agent_id"`
+
+	// AgentSecret 企业微信自建应用 secret，支持 ${ENV_VAR} 引用
+	AgentSecret string `yaml:"agent_secret"`
+
+	// EncodingAESKey 企业微信回调加密密钥（43 位，配置后支持加密回调），支持 ${ENV_VAR} 引用
+	EncodingAESKey string `yaml:"encoding_aes_key"`
+
+	// APIToken WhatsApp 出站 Cloud API 令牌（缺省复用 token），支持 ${ENV_VAR} 引用
+	APIToken string `yaml:"api_token"`
+
+	// PhoneNumberID WhatsApp Cloud API 的 phone_number_id（出站必填）
+	PhoneNumberID string `yaml:"phone_number_id"`
+
+	// APIBase 平台 API 基址（默认各平台官方端点，可指向代理）
+	APIBase string `yaml:"api_base"`
+
+	// PathPrefix 入站回调路由前缀（默认各渠道 /channels/<渠道名>）
+	PathPrefix string `yaml:"path_prefix"`
 }
 
 // MCPConfig MCP Server 接入配置。
@@ -335,6 +433,8 @@ func (c *Config) ToGatewayConfig() llm.GatewayConfig {
 		FallbackProvider: c.LLM.FallbackProvider,
 		Retry:            c.LLM.Retry,
 		CircuitBreaker:   c.LLM.CircuitBreaker,
+		Cache:            c.LLM.Cache,
+		Meter:            c.LLM.Meter,
 	}
 }
 
@@ -383,6 +483,11 @@ func (c *Config) applyDefaults() {
 	if c.Session.CleanupInterval == "" {
 		c.Session.CleanupInterval = "5m"
 	}
+	if c.Session.RequestsPerMinute == 0 {
+		// 默认启用 per-user 限流 30 次/分钟（与安全设计的"每会话限流"口径一致，
+		// 0 表示不限流会让 per-user 限流实际关闭）
+		c.Session.RequestsPerMinute = 30
+	}
 	if c.Search.DefaultEngine == "" {
 		c.Search.DefaultEngine = "duckduckgo"
 	}
@@ -417,6 +522,18 @@ func (c *Config) resolveEnvVars() {
 	c.Search.TavilyAPIKey = resolveEnvVar(c.Search.TavilyAPIKey)
 	c.Server.AuthAPIKey = resolveEnvVar(c.Server.AuthAPIKey)
 	c.Server.AuthJWTSecret = resolveEnvVar(c.Server.AuthJWTSecret)
+	for name, ch := range c.Channels {
+		ch.Token = resolveEnvVar(ch.Token)
+		ch.CallbackURL = resolveEnvVar(ch.CallbackURL)
+		ch.ClientSecret = resolveEnvVar(ch.ClientSecret)
+		ch.AppSecret = resolveEnvVar(ch.AppSecret)
+		ch.VerificationToken = resolveEnvVar(ch.VerificationToken)
+		ch.EncryptKey = resolveEnvVar(ch.EncryptKey)
+		ch.AgentSecret = resolveEnvVar(ch.AgentSecret)
+		ch.EncodingAESKey = resolveEnvVar(ch.EncodingAESKey)
+		ch.APIToken = resolveEnvVar(ch.APIToken)
+		c.Channels[name] = ch
+	}
 }
 
 // resolveEnvVar 将 "${VAR_NAME}" 格式替换为对应环境变量的值
@@ -449,6 +566,59 @@ func (c *Config) Validate() error {
 	if c.LLM.DefaultProvider != "" {
 		if _, ok := c.LLM.Providers[c.LLM.DefaultProvider]; !ok {
 			return fmt.Errorf("config: default_provider %q not found in providers", c.LLM.DefaultProvider)
+		}
+	}
+	for name, ch := range c.Channels {
+		if !ch.Enabled {
+			continue
+		}
+		// 各渠道启用时必须配齐凭证（与认证层"缺密钥即拒绝启动"的口径一致）
+		var missing []string
+		switch name {
+		case "webhook", "telegram", "whatsapp":
+			if ch.Token == "" {
+				missing = append(missing, "token")
+			}
+		case "dingtalk":
+			if ch.ClientID == "" {
+				missing = append(missing, "client_id")
+			}
+			if ch.ClientSecret == "" {
+				missing = append(missing, "client_secret")
+			}
+		case "feishu", "qq":
+			if ch.AppID == "" {
+				missing = append(missing, "app_id")
+			}
+			if ch.AppSecret == "" {
+				missing = append(missing, "app_secret")
+			}
+		case "wechat", "微信":
+			if ch.AppID == "" {
+				missing = append(missing, "app_id")
+			}
+			if ch.AppSecret == "" {
+				missing = append(missing, "app_secret")
+			}
+			if ch.Token == "" {
+				missing = append(missing, "token")
+			}
+		case "wecom":
+			if ch.CorpID == "" {
+				missing = append(missing, "corp_id")
+			}
+			if ch.AgentID == "" {
+				missing = append(missing, "agent_id")
+			}
+			if ch.AgentSecret == "" {
+				missing = append(missing, "agent_secret")
+			}
+			if ch.Token == "" {
+				missing = append(missing, "token")
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("config: 渠道 %q 已启用但缺少必填凭证: %s（不允许无认证端点）", name, strings.Join(missing, ", "))
 		}
 	}
 	return nil

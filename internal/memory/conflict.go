@@ -1,4 +1,6 @@
 // conflict.go 实现记忆冲突处理：时间戳优先、置信度衰减、冲突检测。
+// 注意（P2）：本模块服务于长期记忆（情景/语义/向量库）；当前 CombinedMemory.longTerm 恒为 nil，
+// 这些函数尚未接入生产路径，待长期记忆实现时在记忆写入/检索链路中接线。
 package memory
 
 import (

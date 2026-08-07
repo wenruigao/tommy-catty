@@ -18,6 +18,8 @@ var (
 	ErrAllProvidersFailed = errors.New("llm: all providers failed")
 	// ErrCircuitOpen 表示供应商熔断器已打开
 	ErrCircuitOpen = errors.New("llm: circuit breaker open")
+	// ErrBudgetExceeded 表示日 Token 预算已用尽，拒绝新的调用
+	ErrBudgetExceeded = errors.New("llm: daily token budget exceeded")
 )
 
 // GatewayConfig 网关配置（从 YAML 配置文件映射）
@@ -36,6 +38,12 @@ type GatewayConfig struct {
 
 	// CircuitBreaker 熔断器配置（可选）
 	CircuitBreaker *CircuitBreakerYAMLConfig `yaml:"circuit_breaker"`
+
+	// Cache 语义缓存配置（可选，仅 L1 精确哈希层；L2 向量相似层属 P2 未实现）
+	Cache *CacheYAMLConfig `yaml:"cache"`
+
+	// Meter Token 计量/预算配置（可选；计量始终启用，此处控制日预算）
+	Meter *MeterYAMLConfig `yaml:"meter"`
 }
 
 // RetryConfig YAML 可序列化的重试配置
@@ -96,6 +104,20 @@ func (c *CircuitBreakerYAMLConfig) ToConfig() CircuitBreakerConfig {
 	return cfg
 }
 
+// CacheYAMLConfig YAML 可序列化的语义缓存配置（L1 精确哈希层）。
+// L2 向量相似层依赖 embedding 模型，属 P2 阶段，暂未实现。
+type CacheYAMLConfig struct {
+	Enabled  bool   `yaml:"enabled"`  // 为 true 时才启用语义缓存
+	Capacity int    `yaml:"capacity"` // 缓存条目容量（默认 500）
+	TTL      string `yaml:"ttl"`      // 过期时间，如 "10m"（默认 10 分钟）
+}
+
+// MeterYAMLConfig YAML 可序列化的 Token 计量/预算配置。
+type MeterYAMLConfig struct {
+	// DailyTokenLimit 每日 Token 预算，<= 0 表示不限（仍会计量汇总，经 /api/v1/usage 暴露）
+	DailyTokenLimit int `yaml:"daily_token_limit"`
+}
+
 // Gateway 是 LLM 供应商的统一网关，负责路由、重试和故障回退
 type Gateway struct {
 	mu               sync.RWMutex
@@ -104,6 +126,9 @@ type Gateway struct {
 	fallbackProvider string
 	httpClient       *http.Client
 	retryExecutor    *RetryExecutor
+	cache            *SemanticCache // 语义缓存 L1（nil 表示禁用）
+	meter            *Meter         // Token 计量器
+	budgetWarnDay    time.Time      // 当日已发出 80% 预算预警的日期（去重）
 }
 
 // NewGateway 创建一个空的 LLM 网关实例（使用默认重试策略）
@@ -159,6 +184,25 @@ func NewGatewayFromConfig(cfg GatewayConfig) *Gateway {
 
 	gw.SetDefault(cfg.DefaultProvider)
 	gw.SetFallback(cfg.FallbackProvider)
+
+	// 语义缓存：显式启用才生效（L1 精确哈希层；缓存键含工具列表，见 cacheKey）
+	if cfg.Cache != nil && cfg.Cache.Enabled {
+		var ttl time.Duration
+		if cfg.Cache.TTL != "" {
+			if d, terr := time.ParseDuration(cfg.Cache.TTL); terr == nil {
+				ttl = d
+			}
+		}
+		gw.cache = NewSemanticCache(cfg.Cache.Capacity, ttl)
+	}
+
+	// Token 计量：始终启用（未配置预算时仅做用量汇总，供 /api/v1/usage 暴露）
+	dailyLimit := 0
+	if cfg.Meter != nil {
+		dailyLimit = cfg.Meter.DailyTokenLimit
+	}
+	gw.meter = NewMeter(dailyLimit)
+
 	return gw
 }
 
@@ -199,8 +243,50 @@ func (g *Gateway) RetryExecutor() *RetryExecutor {
 	return g.retryExecutor
 }
 
+// SetCache 设置语义缓存（nil 表示禁用）
+func (g *Gateway) SetCache(c *SemanticCache) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.cache = c
+}
+
+// Cache 返回网关的语义缓存（可能为 nil）
+func (g *Gateway) Cache() *SemanticCache {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.cache
+}
+
+// SetMeter 设置 Token 计量器（nil 表示不计量）
+func (g *Gateway) SetMeter(m *Meter) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.meter = m
+}
+
+// Meter 返回网关的 Token 计量器（可能为 nil）
+func (g *Gateway) Meter() *Meter {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.meter
+}
+
 // Chat 发送聊天请求，自动路由到对应供应商，支持重试、熔断和回退
 func (g *Gateway) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	// 预算门禁：超出日 Token 预算后拒绝新调用（成本控制的执行点）
+	if m := g.Meter(); m != nil {
+		if used, limit, exceeded := m.CheckBudget(); exceeded {
+			return ChatResponse{}, fmt.Errorf("%w: used %d / limit %d", ErrBudgetExceeded, used, limit)
+		}
+	}
+
+	// 语义缓存 L1：命中直接返回（流式请求不进缓存）
+	if c := g.Cache(); c != nil && !req.Stream {
+		if resp, hit := c.Get(req); hit {
+			return resp, nil
+		}
+	}
+
 	provider, err := g.resolveProvider(req.Model)
 	if err != nil {
 		return ChatResponse{}, err
@@ -211,6 +297,7 @@ func (g *Gateway) Chat(ctx context.Context, req ChatRequest) (ChatResponse, erro
 		return provider.Chat(ctx, req)
 	})
 	if err == nil {
+		g.afterChatSuccess(req, resp)
 		return resp, nil
 	}
 
@@ -226,6 +313,7 @@ func (g *Gateway) Chat(ctx context.Context, req ChatRequest) (ChatResponse, erro
 				return fallback.Chat(ctx, req)
 			})
 			if ferr == nil {
+				g.afterChatSuccess(req, resp)
 				return resp, nil
 			}
 			return ChatResponse{}, fmt.Errorf("%w: primary(%s): %v; fallback(%s): %v",
@@ -322,4 +410,28 @@ func (g *Gateway) getProvider(name string) (LLMProvider, error) {
 		return p, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, name)
+}
+
+// afterChatSuccess 成功调用后的统一收尾：记录 Token 计量（含 80% 预算预警）并写语义缓存。
+func (g *Gateway) afterChatSuccess(req ChatRequest, resp ChatResponse) {
+	if m := g.Meter(); m != nil {
+		m.RecordUsage(UsageExecution, resp.Model, resp.Usage)
+		used, limit, _ := m.CheckBudget()
+		if limit > 0 && float64(used) >= float64(limit)*0.8 {
+			today := time.Now().Truncate(24 * time.Hour)
+			g.mu.Lock()
+			first := !g.budgetWarnDay.Equal(today)
+			if first {
+				g.budgetWarnDay = today
+			}
+			g.mu.Unlock()
+			if first {
+				log.Printf("[METER] 预警: 日 Token 用量已达预算 80%%（%d/%d）", used, limit)
+			}
+		}
+	}
+	// 写缓存：仅缓存非流式的纯文本响应（工具调用响应不缓存，避免副作用重放）
+	if c := g.Cache(); c != nil && !req.Stream && len(resp.ToolCalls) == 0 && resp.Content != "" {
+		c.Put(req, resp)
+	}
 }

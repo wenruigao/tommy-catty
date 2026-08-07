@@ -30,6 +30,9 @@ type AuthConfig struct {
 	// JWTSecret HS256 签名密钥（jwt 模式下必填）；
 	// 该模式下空密钥将拒绝所有请求（500）
 	JWTSecret string
+	// UserID api_key 模式绑定的固定用户身份（建议配置）：非空时忽略
+	// 客户端提供的 X-User-ID，防止同一密钥持有者互相冒充。
+	UserID string
 }
 
 // AuthMiddleware 从请求中提取用户标识。
@@ -63,7 +66,14 @@ func AuthMiddlewareWithConfig(cfg AuthConfig) func(http.Handler) http.Handler {
 					http.Error(w, `{"error":"unauthorized: invalid API key"}`, http.StatusUnauthorized)
 					return
 				}
-				userID = r.Header.Get("X-User-ID")
+				// 身份绑定：配置了固定身份时忽略客户端提供的 X-User-ID，
+				// 防止同一密钥持有者互相冒充；未配置时身份仍由客户端
+				// 指定（多人共用同一密钥的部署必须知晓该风险，建议配置 auth_user_id）。
+				if cfg.UserID != "" {
+					userID = cfg.UserID
+				} else {
+					userID = r.Header.Get("X-User-ID")
+				}
 			default: // "header" — 仅内网部署使用
 				userID = r.Header.Get("X-User-ID")
 			}
@@ -165,8 +175,11 @@ func verifyHS256JWT(token, secret string) (string, error) {
 		return "", errors.New("JWT 负载解析失败")
 	}
 
-	// 校验过期时间（exp 存在时必须未过期）
-	if payload.Exp > 0 && time.Now().Unix() >= payload.Exp {
+	// 校验过期时间：exp 为必选声明，缺失（缺省即永不过期）或已过期一律拒绝
+	if payload.Exp <= 0 {
+		return "", errors.New("JWT 缺少 exp 过期声明")
+	}
+	if time.Now().Unix() >= payload.Exp {
 		return "", errors.New("JWT 已过期")
 	}
 	if payload.Sub == "" {

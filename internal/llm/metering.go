@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// CostPerToken 每 token 的估算成本系数（成本单位/token），
+// 用于 task_end 检查点的 Checkpoint.Cost 估算，供 cost-guard 等成本策略决策。
+const CostPerToken = 0.00001
+
 // UsageCategory Token 用途分类。
 type UsageCategory string
 

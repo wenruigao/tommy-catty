@@ -60,20 +60,23 @@ func DefaultPolicies() []Policy {
 				NotifySeverity: "warning",
 			},
 		},
-		// 4. 办公时间限制：高风险工具仅允许在工作时间使用
+		// 4. 办公时间限制：高风险工具仅允许在工作时间使用。
+		// 引擎语义为"条件命中即执行效果"，因此条件必须描述"禁止窗口"：
+		// 非工作时间 18:00-09:00（跨午夜写法）命中即 deny。
+		// 若条件写成工作时间 09:00-18:00，会导致白天封禁、夜间放行（语义反转）。
 		{
 			ID:          "office-hours",
 			Name:        "办公时间限制",
-			Description: "L3 高风险工具仅允许在 09:00-18:00 工作时间内使用",
+			Description: "L3 高风险工具仅允许在 09:00-18:00 工作时间内使用，非工作时间禁止",
 			Priority:    4,
 			Enabled:     true,
 			When: PolicyCondition{
 				ToolRisk:  []string{"L3"},
-				TimeRange: "09:00-18:00",
+				TimeRange: "18:00-09:00",
 			},
 			Then: PolicyAction{
 				Effect:         EffectDeny,
-				Message:        "高风险工具仅允许在工作时间(09:00-18:00)内使用",
+				Message:        "当前为非工作时间，高风险工具已禁止（仅允许 09:00-18:00 工作时间使用）",
 				NotifySeverity: "warning",
 			},
 		},
@@ -123,7 +126,10 @@ func DefaultPolicies() []Policy {
 			Enabled:     true,
 			When: PolicyCondition{
 				ToolNames: []string{"file_read", "file_write"},
-				Pattern:   `(/etc/|/usr/|/System/|/var/|~/.ssh)`,
+				// 除系统目录外，同时覆盖展开后的用户敏感目录（/Users/x/.ssh、
+				// /home/x/.ssh 等）与 shell 配置文件；旧写法只匹配字面 ~/.ssh，
+				// 展开后的绝对路径可绕过。
+				Pattern: `(/etc/|/usr/|/System/|/var/|/boot/|/Library/|~/\.ssh|/\.ssh/|/Users/[^/\s]+/\.(ssh|aws)|/home/[^/\s]+/\.(ssh|aws)|/\.(bashrc|zshrc|profile|gitconfig)\b)`,
 			},
 			Then: PolicyAction{
 				Effect:         EffectDeny,
@@ -149,7 +155,28 @@ func DefaultPolicies() []Policy {
 				NotifySeverity: "info",
 			},
 		},
-		// 9. 提示注入防护：在任务开始时检测输入中的明确指令注入短语。
+		// 10. L3 默认审批：基于风险等级的兜底审批策略。
+		// 无任何具体策略命中时（如白天 shell_exec 执行无特征命令），
+		// L3 高危工具也不得直接执行；非工作时间由 office-hours（优先级更高）
+		// 的 deny 先行短路。HTTP 模式下 approver 不可用时 require_approval
+		// 自动拒绝（等价 deny），符合非交互场景的安全预期。
+		{
+			ID:          "l3-approval",
+			Name:        "L3 高危工具默认审批",
+			Description: "L3 高危工具（shell_exec / code_run 等）基于风险等级默认要求人工审批，防止无策略命中时直接执行",
+			Priority:    9,
+			Enabled:     true,
+			When: PolicyCondition{
+				ActionType: []string{"tool_call"},
+				ToolRisk:   []string{"L3"},
+			},
+			Then: PolicyAction{
+				Effect:         EffectRequireApproval,
+				Message:        "L3 高危工具调用需要人工审批确认",
+				NotifySeverity: "warning",
+			},
+		},
+		// 11. 提示注入防护：在任务开始时检测输入中的明确指令注入短语。
 		// 与 internal/tool/sanitizer.go 的注入特征同源，但只收录明确的注入指令
 		// 短语（ignore/disregard/forget previous instructions、忽略/无视之前的指令等），
 		// 不收录 "system prompt"、"你现在是" 这类容易误伤正常请求的宽泛特征。

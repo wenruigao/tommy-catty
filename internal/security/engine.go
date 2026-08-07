@@ -15,6 +15,8 @@ import (
 type Engine struct {
 	// policies 存储所有已加载的策略
 	policies []Policy
+	// audit 审计日志记录器（nil 表示不记录审计）
+	audit *AuditLogger
 	// mu 保护 policies 的读写锁
 	mu sync.RWMutex
 }
@@ -68,6 +70,46 @@ func (e *Engine) LoadFromYAML(data []byte) error {
 	return nil
 }
 
+// SetAuditLogger 设置审计日志记录器（传 nil 关闭审计）。
+// 审计覆盖：所有命中策略决策的检查点（审批/拒绝/脱敏决策可追溯），
+// 以及 L2 及以上风险等级的工具调用（记录操作人与输入内容）。
+func (e *Engine) SetAuditLogger(l *AuditLogger) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.audit = l
+}
+
+// PolicyCount 返回当前已加载的策略数量。
+func (e *Engine) PolicyCount() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.policies)
+}
+
+// LoadPolicies 按"YAML 优先、内置模板兜底"加载安全策略：
+// YAML 数据存在且解析出至少一条策略时仅使用 YAML 配置；
+// YAML 缺失、无策略或解析失败时回退加载内置默认模板，
+// 避免同名策略被双重加载导致重复与语义互相干扰。
+// YAML 解析失败时返回错误供调用方记录，同时已回退加载默认模板。
+func (e *Engine) LoadPolicies(yamlData []byte) error {
+	if len(yamlData) > 0 {
+		err := e.LoadFromYAML(yamlData)
+		if err == nil && e.PolicyCount() > 0 {
+			return nil
+		}
+		if err != nil {
+			for _, p := range DefaultPolicies() {
+				e.AddPolicy(p)
+			}
+			return err
+		}
+	}
+	for _, p := range DefaultPolicies() {
+		e.AddPolicy(p)
+	}
+	return nil
+}
+
 // Evaluate 评估检查点，返回匹配的策略决策（按优先级排序，deny 短路）
 func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 	e.mu.RLock()
@@ -85,6 +127,10 @@ func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 	}
 
 	if len(matched) == 0 {
+		// 无策略命中：L2+ 工具调用仍需审计留痕（记录操作人与输入）
+		if e.audit != nil {
+			e.audit.LogAudit(cp, nil)
+		}
 		return nil
 	}
 
@@ -104,6 +150,11 @@ func (e *Engine) Evaluate(cp Checkpoint) []Decision {
 		if p.Then.Effect == EffectDeny {
 			break // deny 是最终决策，不再继续
 		}
+	}
+
+	// 审计留痕：命中策略的检查点全部落盘（审批决策可追溯）
+	if e.audit != nil {
+		e.audit.LogAudit(cp, decisions)
 	}
 
 	return decisions

@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,10 +130,33 @@ type WebFetchTool struct {
 	client *http.Client
 }
 
+// NewWebFetchTool 创建网页抓取工具（内置 SSRF 防护：
+// 禁止访问云元数据端点、内网与回环地址，重定向目标重新校验）。
 func NewWebFetchTool() *WebFetchTool {
 	return &WebFetchTool{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
+			// 重定向目标重新校验，防止经 30x 跳转进入内网/元数据端点
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("too many redirects")
+				}
+				return validateSSRFHost(req.URL.Hostname())
+			},
+			// 建立连接前校验目标 IP（此时域名已解析），覆盖直连 IP 与域名两种形式
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					host, _, err := net.SplitHostPort(addr)
+					if err != nil {
+						return nil, err
+					}
+					if err := validateSSRFHost(host); err != nil {
+						return nil, err
+					}
+					var d net.Dialer
+					return d.DialContext(ctx, network, addr)
+				},
+			},
 		},
 	}
 }
@@ -169,6 +194,16 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]interface{})
 	// 验证 URL 协议
 	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		return Result{}, fmt.Errorf("url must start with http:// or https://")
+	}
+
+	// ★ SSRF 防护：禁止抓取云元数据端点（169.254.169.254）、内网与回环地址，
+	// 覆盖字面 IP 与域名形式（域名解析后逐一校验，重定向时重新校验）
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return Result{}, fmt.Errorf("invalid url: %w", err)
+	}
+	if err := validateSSRFHost(parsedURL.Hostname()); err != nil {
+		return Result{}, err
 	}
 
 	maxLength := 10000
@@ -224,6 +259,44 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]interface{})
 			"content_length": len(content),
 		},
 	}, nil
+}
+
+// ssrfMetadataIP 云厂商元数据端点 IP（AWS/阿里云等），SSRF 的首选攻击目标。
+var ssrfMetadataIP = net.ParseIP("169.254.169.254")
+
+// validateSSRFHost 校验抓取目标主机（SSRF 防护）：
+// 字面 IP 直接校验；域名形式解析全部 IP 后逐一校验。
+// 回环/私有/链路本地（含云元数据端点）/组播/未指定地址一律拒绝。
+func validateSSRFHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("ssrf protection: empty target host")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return checkSSRFIP(ip)
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("ssrf protection: resolve host failed: %w", err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("ssrf protection: no addresses for host %s", host)
+	}
+	for _, ip := range ips {
+		if err := checkSSRFIP(ip); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkSSRFIP 拒绝内网与敏感地址（含 IPv4 映射形式，net.IP 方法内部已处理）。
+func checkSSRFIP(ip net.IP) error {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() ||
+		ip.Equal(ssrfMetadataIP) {
+		return fmt.Errorf("ssrf protection: access to internal/sensitive address %s is forbidden", ip)
+	}
+	return nil
 }
 
 // ============================================================
@@ -669,6 +742,9 @@ type ShellExecTool struct {
 	BlockedBinaries map[string]bool
 	// BlockedPatterns 危险命令模式（正则）
 	BlockedPatterns []*regexp.Regexp
+	// AllowedWorkDirs working_dir 参数允许的目录白名单（沙箱范围）；
+	// 为空时不限制（保持向后兼容），建议由 RegisterBuiltinTools 注入工作目录。
+	AllowedWorkDirs []string
 }
 
 func NewShellExecTool() *ShellExecTool {
@@ -711,8 +787,9 @@ func NewShellExecTool() *ShellExecTool {
 		regexp.MustCompile(`(?i)dd\s+.*of=/dev/`),
 		// 覆盖 MBR
 		regexp.MustCompile(`(?i)dd\s+.*of=/dev/[shv]d`),
-		// 重定向覆盖 /etc/passwd 等
-		regexp.MustCompile(`(?i)(>|>>)\s*/(etc|usr|bin|sbin)/`),
+		// 重定向覆盖系统目录与用户敏感目录（/etc/passwd、~/.ssh/authorized_keys、
+		// 展开后的 /Users/x/.ssh、/home/x/.ssh 等路径）
+		regexp.MustCompile(`(?i)(>|>>)\s*(/(etc|usr|bin|sbin|boot|System|Library|var|root)/|~/\.(ssh|aws|gnupg|kube|config)/|/Users/[^/\s]+/\.(ssh|aws|gnupg|kube|config)/|/home/[^/\s]+/\.(ssh|aws|gnupg|kube|config)/)`),
 		// eval 执行 base64 编码的恶意代码
 		regexp.MustCompile(`(?i)eval\s+.*base64`),
 		// python/perl/ruby 反弹 shell
@@ -771,10 +848,17 @@ func (t *ShellExecTool) Execute(ctx context.Context, args map[string]interface{}
 	// 独立进程组：便于按进程组终止整个子进程树（与 code_run 一致）
 	cmd.SysProcAttr = resourceLimits()
 
-	// 设置工作目录
+	// 设置工作目录（沙箱校验：必须存在、是目录，且在允许的目录白名单内）
 	if wd, ok := args["working_dir"].(string); ok && wd != "" {
-		if _, err := os.Stat(wd); err != nil {
+		info, err := os.Stat(wd)
+		if err != nil {
 			return Result{}, fmt.Errorf("working directory does not exist: %s", wd)
+		}
+		if !info.IsDir() {
+			return Result{}, fmt.Errorf("working directory is not a directory: %s", wd)
+		}
+		if err := t.validateWorkingDir(wd); err != nil {
+			return Result{}, err
 		}
 		cmd.Dir = wd
 	}
@@ -807,6 +891,26 @@ func (t *ShellExecTool) Execute(ctx context.Context, args map[string]interface{}
 	}
 
 	return result, nil
+}
+
+// validateWorkingDir 校验 working_dir 在沙箱白名单内（防止在任意目录执行命令）。
+// 白名单为空时不限制（向后兼容）；否则目录解析为绝对路径后必须
+// 等于白名单中的某项或位于其子目录内（可绕过符号链接由调用方自行规避，
+// 策略层 scope-fence 另有围栏）。
+func (t *ShellExecTool) validateWorkingDir(wd string) error {
+	if len(t.AllowedWorkDirs) == 0 {
+		return nil
+	}
+	abs, err := filepath.Abs(wd)
+	if err != nil {
+		return fmt.Errorf("cannot resolve working directory: %w", err)
+	}
+	for _, dir := range t.AllowedWorkDirs {
+		if abs == dir || strings.HasPrefix(abs, dir+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("working directory %s is outside the allowed sandbox", wd)
 }
 
 // validateCommand 对命令进行多层安全验证。
@@ -1066,8 +1170,10 @@ func RegisterBuiltinTools(reg *Registry, workDir string) {
 	// 代码执行 - 危险操作，30 秒超时
 	reg.Register(&CodeRunTool{}, RiskDangerous, 30*time.Second)
 
-	// Shell 命令 - 危险操作，30 秒超时
-	reg.Register(NewShellExecTool(), RiskDangerous, 30*time.Second)
+	// Shell 命令 - 危险操作，30 秒超时（working_dir 限制在工作目录沙箱内）
+	shellTool := NewShellExecTool()
+	shellTool.AllowedWorkDirs = allowedDirs
+	reg.Register(shellTool, RiskDangerous, 30*time.Second)
 }
 
 // RegisterSearchTool 将搜索工具注册到注册中心（需要搜索后端依赖）。

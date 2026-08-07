@@ -30,6 +30,16 @@ llm:
     success_threshold: 2        # 半开状态下连续成功多少次后恢复
     open_timeout_s: 60          # 熔断后多久进入半开状态（秒）
 
+  # ── 语义缓存（L1 精确哈希层，缓存键含工具列表；L2 向量相似层属 P2 未实现）──
+  # cache:
+  #   enabled: true               # 显式启用（缺省关闭）
+  #   capacity: 500               # 缓存条目容量
+  #   ttl: "10m"                  # 过期时间
+
+  # ── Token 计量/预算（计量始终启用，用量经 GET /api/v1/usage 暴露）──
+  # meter:
+  #   daily_token_limit: 1000000  # 每日 Token 预算（<=0 不限），达 80% 时日志预警
+
   # 模型供应商列表 — 按需增删，无需改代码
   providers:
     mimo:
@@ -122,6 +132,8 @@ engine:
 #   auth_mode: "header"                  # header（内网，信任 X-User-ID）| api_key | jwt
 #   auth_api_key: "${AGENT_API_KEY}"     # auth_mode=api_key 时必填，请求需携带 X-API-Key
 #   auth_jwt_secret: "${AGENT_JWT_SECRET}" # auth_mode=jwt 时必填（HS256 签名密钥）
+#   auth_user_id: "agent-bot"                # auth_mode=api_key 时建议配置：绑定固定身份，
+#                                            # 忽略客户端 X-User-ID（防止同一密钥持有者互相冒充）
 
 # ────────────────────────────────────────────────────────────
 # 搜索引擎配置（web_search 工具）
@@ -130,6 +142,16 @@ search:
   default_engine: "duckduckgo"   # duckduckgo（免费）| tavily（需 API Key，效果更好）
   # tavily_api_key: "${TAVILY_API_KEY}"  # Tavily API Key（可选）
   max_results: 5                 # 默认返回结果数
+
+# ────────────────────────────────────────────────────────
+# 会话与限流
+# ────────────────────────────────────────────────────────
+session:
+  requests_per_minute: 30        # 每用户每分钟最大请求数（per-user 滑动窗口限流；0 表示不限流）
+
+# 安全审计日志（JSONL 追加写）：记录 L2+ 工具调用与所有命中策略的决策，
+# 含操作人（user_id）、检查点、输入内容，保证审批决策可追溯；留空则禁用审计
+audit_log_path: "data/audit.jsonl"
 
 policy_file: "config/policy.yaml"
 skill_store_path: "data/skills.json"
@@ -147,6 +169,14 @@ work_dir: "."
 #   soul_md_path: "config/soul.md"          # Agent 人格与对话风格文件
 #   user_profiles_dir: "data/users"         # 用户画像（user.md）存放目录
 #   profile_update_interval_runs: 3         # 每完成多少次任务更新一次用户画像
+
+# ────────────────────────────────────────────────────────────
+# db_query 查询结果缓存（缺省启用：容量 200 / TTL 5 分钟）
+# ────────────────────────────────────────────────────────────
+# db_query_cache:
+#   enabled: true                 # 置 false 可禁用
+#   capacity: 200                 # 缓存条目容量
+#   ttl: "5m"                     # 过期时间
 
 # ────────────────────────────────────────────────────────────
 # 数据库只读查询（db_query 工具）
@@ -220,3 +250,76 @@ work_dir: "."
 #       # headers:
 #       #   Authorization: "Bearer ${MCP_REMOTE_TOKEN}"
 #       # tool_prefix: "remote_"      # 工具名前缀（默认 "<name>_"）
+
+# ────────────────────────────────────────────────────────────
+# Channel 接入层（通用渠道，对齐 OpenClaw 的 Channel 机制）
+# ────────────────────────────────────────────────────────────
+# key 为渠道名，内置渠道（声明式配置即接入）：
+#   webhook   通用 HTTP 接收 + callback_url 异步投递（任何系统可直接接入）
+#   dingtalk  钉钉企业内部机器人（回调加签验证 + sessionWebhook/oTo 回复）
+#   feishu    飞书自建应用（url_verification 挑战 + 事件签名验证）
+#   wechat    微信公众号（echostr 接入校验 + XML 消息 + 客服消息回复），配置键也可写 "微信"
+#   wecom     企业微信自建应用（明文/AES 加密回调 + 应用消息回复）
+#   telegram  Telegram Bot（长轮询，无需公网回调；群聊仅响应 @ 消息）
+#   whatsapp  WhatsApp（Cloud API Webhook 格式 + 出站消息接口）
+#   qq        QQ 官方机器人（Webhook 回调 + ed25519 签名验证 + REST 回复）
+# 会话键为 "渠道名:用户/群ID"，与 HTTP X-User-ID 身份隔离，
+# per-user 限流、安全门禁与审计按会话键天然生效。
+# 未配置 channels 时接入层不启动，行为与旧版完全一致。
+# 各渠道启用时必填凭证缺失会拒绝启动（不允许无认证端点）。
+#
+# channels:
+#   webhook:
+#     enabled: true
+#     token: "${CHANNEL_WEBHOOK_TOKEN}"  # 必填，调用方经 Authorization: Bearer <token> 携带
+#     # callback_url: "http://localhost:9000/callback"  # 默认投递地址（单次请求可覆盖）
+#     allow_users: ["*"]                 # 空或 ["*"] = 不限制
+#     group_mode: mention_only           # always | mention_only | never
+#     ack_message: "收到，处理中…"        # 受理提示（空则不发）
+#     request_timeout: 120s              # 单条消息执行超时
+#
+#   dingtalk:
+#     enabled: false
+#     client_id: "${DINGTALK_APP_KEY}"          # 必填，应用 appKey
+#     client_secret: "${DINGTALK_APP_SECRET}"   # 必填，兼回调加签密钥
+#     # path_prefix: /channels/dingtalk         # 管理端配置的回调地址路径
+#
+#   feishu:
+#     enabled: false
+#     app_id: "${FEISHU_APP_ID}"                # 必填
+#     app_secret: "${FEISHU_APP_SECRET}"        # 必填
+#     encrypt_key: "${FEISHU_ENCRYPT_KEY}"      # 建议配置（强制 X-Lark-Signature 校验）
+#     # verification_token: "${FEISHU_VERIFICATION_TOKEN}"  # 可选二次验证
+#
+#   wechat:
+#     enabled: false
+#     app_id: "${WECHAT_APP_ID}"                # 必填，公众号 appid
+#     app_secret: "${WECHAT_APP_SECRET}"        # 必填，公众号 appsecret
+#     token: "${WECHAT_TOKEN}"                  # 必填，公众平台回调 Token
+#     # 注意：公众平台仅支持明文消息模式（加密模式回调将被跳过）
+#
+#   wecom:
+#     enabled: false
+#     corp_id: "ww1234567890abcdef"             # 必填，企业 ID
+#     agent_id: "1000002"                       # 必填，自建应用 agentid
+#     agent_secret: "${WECOM_AGENT_SECRET}"     # 必填，自建应用 secret
+#     token: "${WECOM_TOKEN}"                   # 必填，回调 Token
+#     encoding_aes_key: "${WECOM_AES_KEY}"      # 可选（43 位，配置后支持加密回调）
+#
+#   telegram:
+#     enabled: false
+#     token: "${TELEGRAM_BOT_TOKEN}"            # 必填，BotFather 颁发的 Token
+#     # api_base: "https://api.telegram.org"    # 可指向代理
+#
+#   whatsapp:
+#     enabled: false
+#     token: "${WHATSAPP_WEBHOOK_TOKEN}"        # 必填，入站回调验证令牌
+#     phone_number_id: "123456789"              # 出站必填，Cloud API phone_number_id
+#     # api_token: "${WHATSAPP_API_TOKEN}"      # 出站令牌（缺省复用 token）
+#     # api_base: "https://graph.facebook.com/v19.0"  # 可指向 Twilio 等中转网关
+#
+#   qq:
+#     enabled: false
+#     app_id: "${QQ_APP_ID}"                    # 必填，开放平台 AppID
+#     app_secret: "${QQ_APP_SECRET}"            # 必填，兼派生 ed25519 签名密钥
+#     # 管理端回调地址填 /channels/qq，勾选 C2C/群 @ 消息事件

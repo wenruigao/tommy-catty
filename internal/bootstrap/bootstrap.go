@@ -49,8 +49,24 @@ func RegisterDataTools(cfg *config.Config, registry *tool.Registry) *Result {
 			res.DBCount++
 		}
 		res.Pool = pool
+		// db_query 结果缓存：缺省启用（容量 200 / TTL 5 分钟），db_query_cache.enabled=false 关闭
+		var qcache *dbquery.QueryCache
+		if cfg.DBQueryCache == nil || cfg.DBQueryCache.Enabled {
+			capacity, ttl := 0, time.Duration(0)
+			if cfg.DBQueryCache != nil {
+				capacity = cfg.DBQueryCache.Capacity
+				if cfg.DBQueryCache.TTL != "" {
+					if d, perr := time.ParseDuration(cfg.DBQueryCache.TTL); perr == nil {
+						ttl = d
+					} else {
+						res.Warnings = append(res.Warnings, fmt.Sprintf("db_query_cache.ttl %q 非法，使用默认 5m", cfg.DBQueryCache.TTL))
+					}
+				}
+			}
+			qcache = dbquery.NewQueryCache(capacity, ttl)
+		}
 		// 注册 db_query 工具（只读，超时取 60s 上限，单查询内部另有 QueryTimeout）
-		registry.Register(dbquery.NewDBQueryTool(pool), tool.RiskReadOnly, 60*time.Second)
+		registry.Register(dbquery.NewDBQueryToolWithCache(pool, qcache), tool.RiskReadOnly, 60*time.Second)
 	}
 
 	// ---- 知识库 ----

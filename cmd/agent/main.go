@@ -6,7 +6,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -92,10 +91,12 @@ func main() {
 	// 最终输出安全门禁（敏感信息脱敏、输出审查）
 	outputGate := session.NewOutputGateAdapter(secEngine)
 
-	// 初始化 Skill 系统
+	// 初始化 Skill 系统（版本快照 + 生成门控，与 HTTP 模式口径一致）
 	skillStore := skill.NewStore(cfg.SkillStorePath)
 	skillMatcher := skill.NewMatcher(skillStore)
 	skillGen := skill.NewGenerator(skillStore)
+	skillGen.SetVersionManager(skill.NewVersionManager())
+	genGate := skill.NewGenerationGate()
 
 	// 初始化追踪器（CLI 模式全局）
 	tracer := trace.NewTracer()
@@ -221,6 +222,7 @@ func main() {
 		decisions := secEngine.Evaluate(security.Checkpoint{
 			Type:    "task_start",
 			Content: input,
+			UserID:  "local",
 		})
 		if blocked := checkDecisions(decisions); blocked {
 			continue
@@ -247,12 +249,13 @@ func main() {
 
 		// 安全策略检查（任务结束）
 		secEngine.Evaluate(security.Checkpoint{
-			Type: "task_end",
-			Cost: float64(result.TokenUsage) * 0.00001,
+			Type:   "task_end",
+			UserID: "local",
+			Cost:   float64(result.TokenUsage) * llm.CostPerToken,
 		})
 
-		// 尝试自动生成 Skill
-		tryGenerateSkill(skillGen, result)
+		// 尝试自动生成 Skill（经 GenerationGate 门控）
+		tryGenerateSkill(skillGen, genGate, result)
 	}
 }
 
@@ -284,18 +287,15 @@ func initLLMGateway(cfg *config.Config) *llm.Gateway {
 	return gw
 }
 
-// initSecurityEngine 初始化安全策略引擎
+// initSecurityEngine 初始化安全策略引擎。
+// 采用"YAML 优先、内置模板兜底"策略：policy.yaml 存在时仅加载 YAML 配置，
+// 缺失或无策略时才回退到内置默认模板，避免同名策略双重加载。
 func initSecurityEngine(cfg *config.Config) *security.Engine {
 	eng := security.NewEngine()
 
-	for _, p := range security.DefaultPolicies() {
-		eng.AddPolicy(p)
-	}
-
-	if data, err := os.ReadFile(cfg.PolicyFile); err == nil {
-		if err := eng.LoadFromYAML(data); err != nil {
-			fmt.Printf("  ⚠️  策略文件解析失败: %v\n", err)
-		}
+	data, _ := os.ReadFile(cfg.PolicyFile)
+	if err := eng.LoadPolicies(data); err != nil {
+		fmt.Printf("  ⚠️  策略文件解析失败，已回退内置默认策略: %v\n", err)
 	}
 
 	return eng
@@ -397,75 +397,16 @@ func checkDecisions(decisions []security.Decision) bool {
 	return false
 }
 
-// skillTraceData 与 internal/skill 的 traceData 结构对应的 JSON 结构，
-// 用于把引擎执行追踪序列化为 Skill 生成器可解析的格式。
-type skillTraceData struct {
-	TraceID     string           `json:"trace_id"`
-	TaskSummary string           `json:"task_summary"`
-	Steps       []skillTraceStep `json:"steps"`
-	Tools       []string         `json:"tools"`
-}
-
-// skillTraceStep 与 internal/skill 的 traceStep 结构对应。
-type skillTraceStep struct {
-	Order    int    `json:"order"`
-	Action   string `json:"action"`
-	ToolName string `json:"tool_name"`
-	Input    string `json:"input"`
-	Output   string `json:"output"`
-	Success  bool   `json:"success"`
-}
-
-// buildTraceJSON 把引擎执行追踪转换为 Skill 生成器期望的 JSON。
-// 转换失败时返回错误（调用方静默忽略即可）。
-func buildTraceJSON(result *engine.ExecutionTrace) (string, error) {
-	data := skillTraceData{
-		TraceID:     result.TaskID,
-		TaskSummary: result.Goal,
-	}
-	toolSet := make(map[string]bool)
-	for i, step := range result.Steps {
-		ts := skillTraceStep{Order: i + 1, Success: true}
-		switch {
-		case step.Action != "":
-			ts.Action = "call_tool"
-			ts.ToolName = step.Action
-			if input, err := json.Marshal(step.ActionInput); err == nil {
-				ts.Input = string(input)
-			}
-			ts.Output = step.Observation
-			// 执行错误/调用被拦截的步骤标记为失败
-			if strings.HasPrefix(step.Observation, "工具执行错误") ||
-				strings.HasPrefix(step.Observation, "工具调用失败") ||
-				strings.HasPrefix(step.Observation, "调用被拦截") {
-				ts.Success = false
-			}
-			toolSet[step.Action] = true
-		case step.IsFinal:
-			ts.Action = "final_answer"
-			ts.Output = step.FinalAnswer
-		default:
-			ts.Action = "think"
-			ts.Output = step.Thought
-		}
-		data.Steps = append(data.Steps, ts)
-	}
-	for name := range toolSet {
-		data.Tools = append(data.Tools, name)
-	}
-	out, err := json.Marshal(data)
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}
-
-// tryGenerateSkill 尝试从执行结果自动生成 Skill
-func tryGenerateSkill(gen *skill.Generator, result *engine.ExecutionTrace) {
-	if len(result.Steps) < 3 {
+// tryGenerateSkill 尝试从执行结果自动生成 Skill 并持久化。
+// 追踪转换逻辑复用 skill.BuildTraceJSON（与 HTTP 模式一致）。
+// 经 GenerationGate 门控：goal 指纹去重 + 步骤数 >= 3 + 耗时 >= 30s + 日配额 10，
+// 避免相似任务重复执行时持续产出近似重复的 Skill。
+func tryGenerateSkill(gen *skill.Generator, gate *skill.GenerationGate, result *engine.ExecutionTrace) {
+	fingerprint := skill.GoalFingerprint(result.Goal)
+	if !gate.ShouldGenerate(fingerprint, len(result.Steps), result.EndTime.Sub(result.StartTime)) {
 		return
 	}
-	traceJSON, err := buildTraceJSON(result)
+	traceJSON, err := skill.BuildTraceJSON(result)
 	if err != nil {
 		return
 	}
@@ -473,10 +414,13 @@ func tryGenerateSkill(gen *skill.Generator, result *engine.ExecutionTrace) {
 	if err != nil {
 		return
 	}
-	if err := gen.ValidateSkill(s); err != nil {
+	// 持久化：缺少 Save 会导致技能丢失，/skills 永远为空、匹配器无技能可用
+	if err := gen.Save(s); err != nil {
+		fmt.Printf("  ⚠️  Skill 持久化失败: %v\n", err)
 		return
 	}
-	fmt.Printf("  🧠 已自动生成 Skill「%s」\n", s.Name)
+	gate.MarkGenerated(fingerprint)
+	fmt.Printf("  🧠 已自动生成并持久化 Skill「%s」\n", s.Name)
 }
 
 // runDoctor 执行完整健康自检

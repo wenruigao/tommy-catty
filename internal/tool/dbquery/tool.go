@@ -12,12 +12,18 @@ import (
 // DBQueryTool 数据库只读查询工具。
 // 通过 SQL 安全验证器保证只读，通过连接池访问多个数据源。
 type DBQueryTool struct {
-	pool *Pool
+	pool  *Pool
+	cache *QueryCache // 查询结果缓存（nil 表示禁用）
 }
 
 // NewDBQueryTool 创建数据库查询工具。
 func NewDBQueryTool(pool *Pool) *DBQueryTool {
 	return &DBQueryTool{pool: pool}
+}
+
+// NewDBQueryToolWithCache 创建带结果缓存的数据库查询工具（cache 传 nil 则禁用缓存）。
+func NewDBQueryToolWithCache(pool *Pool, cache *QueryCache) *DBQueryTool {
+	return &DBQueryTool{pool: pool, cache: cache}
 }
 
 func (t *DBQueryTool) Name() string { return "db_query" }
@@ -66,15 +72,18 @@ func (t *DBQueryTool) Execute(ctx context.Context, args map[string]interface{}) 
 
 	// 可选的 max_rows 覆盖
 	valCfg := cfg.toValidateConfig()
+	maxRowsOverridden := false
 	if mr, ok := args["max_rows"]; ok {
 		switch v := mr.(type) {
 		case int:
 			if v > 0 && v < valCfg.MaxRows {
 				valCfg.MaxRows = v
+				maxRowsOverridden = true
 			}
 		case float64:
 			if int(v) > 0 && int(v) < valCfg.MaxRows {
 				valCfg.MaxRows = int(v)
+				maxRowsOverridden = true
 			}
 		}
 	}
@@ -83,6 +92,22 @@ func (t *DBQueryTool) Execute(ctx context.Context, args map[string]interface{}) 
 	validated, err := Validate(rawSQL, valCfg)
 	if err != nil {
 		return tool.Result{Error: fmt.Sprintf("SQL 安全验证失败: %v", err)}, nil
+	}
+
+	// 结果缓存查询：max_rows 覆盖时不启用（行数上限不同，结果不可复用）
+	cacheable := t.cache != nil && !maxRowsOverridden
+	if cacheable {
+		if cached, hit := t.cache.Get(datasource, validated.SQL); hit {
+			return tool.Result{
+				Output: cached.FormatMarkdown(),
+				Metadata: map[string]interface{}{
+					"datasource": datasource,
+					"row_count":  cached.RowCount,
+					"tables":     validated.Tables,
+					"cache":      "hit",
+				},
+			}, nil
+		}
 	}
 
 	// 带超时的查询上下文
@@ -100,6 +125,11 @@ func (t *DBQueryTool) Execute(ctx context.Context, args map[string]interface{}) 
 		return tool.Result{Error: fmt.Sprintf("查询执行失败: %v", err)}, nil
 	}
 	result.Duration = time.Since(start)
+
+	// 写入结果缓存（Put 内部跳过截断结果）
+	if cacheable {
+		t.cache.Put(datasource, validated.SQL, result)
+	}
 
 	return tool.Result{
 		Output: result.FormatMarkdown(),
