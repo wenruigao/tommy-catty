@@ -54,6 +54,10 @@ type Config struct {
 
 	// Persona Agent 人格体系配置（agent.md / soul.md / 用户画像）
 	Persona PersonaConfig `yaml:"persona"`
+
+	// Channels 通用 Channel 接入层配置（key 为渠道名，如 webhook）：
+	// 对齐 OpenClaw 的 Channel 机制，声明式接入外部消息平台；未配置时接入层不启动
+	Channels map[string]ChannelEntry `yaml:"channels"`
 }
 
 // PersonaConfig Agent 人格体系配置
@@ -244,6 +248,32 @@ type ServerConfig struct {
 	AuthUserID string `yaml:"auth_user_id"`
 }
 
+// ChannelEntry 单个 Channel（渠道）的 YAML 配置条目（对应 internal/channel 接入层）。
+type ChannelEntry struct {
+	// Enabled 是否启用该渠道
+	Enabled bool `yaml:"enabled"`
+
+	// AllowUsers 允许使用的平台用户白名单（空或 ["*"] 表示不限制）
+	AllowUsers []string `yaml:"allow_users"`
+
+	// GroupMode 群消息模式：always | mention_only | never
+	//（mention 判断由渠道 adapter 侧完成，默认 mention_only）
+	GroupMode string `yaml:"group_mode"`
+
+	// AckMessage 受理提示（非空时收到消息先回一条，长任务体验关键）
+	AckMessage string `yaml:"ack_message"`
+
+	// RequestTimeout 单条消息执行超时（如 "120s"，默认 120s）
+	RequestTimeout string `yaml:"request_timeout"`
+
+	// Token 渠道接入令牌（webhook 渠道必填），支持 ${ENV_VAR} 引用
+	Token string `yaml:"token"`
+
+	// CallbackURL webhook 默认投递地址，支持 ${ENV_VAR} 引用
+	//（单次请求可用 callback_url 字段覆盖）
+	CallbackURL string `yaml:"callback_url"`
+}
+
 // MCPConfig MCP Server 接入配置。
 type MCPConfig struct {
 	// Servers MCP Server 列表（为空则跳过 MCP 装配）
@@ -430,6 +460,11 @@ func (c *Config) resolveEnvVars() {
 	c.Search.TavilyAPIKey = resolveEnvVar(c.Search.TavilyAPIKey)
 	c.Server.AuthAPIKey = resolveEnvVar(c.Server.AuthAPIKey)
 	c.Server.AuthJWTSecret = resolveEnvVar(c.Server.AuthJWTSecret)
+	for name, ch := range c.Channels {
+		ch.Token = resolveEnvVar(ch.Token)
+		ch.CallbackURL = resolveEnvVar(ch.CallbackURL)
+		c.Channels[name] = ch
+	}
 }
 
 // resolveEnvVar 将 "${VAR_NAME}" 格式替换为对应环境变量的值
@@ -462,6 +497,15 @@ func (c *Config) Validate() error {
 	if c.LLM.DefaultProvider != "" {
 		if _, ok := c.LLM.Providers[c.LLM.DefaultProvider]; !ok {
 			return fmt.Errorf("config: default_provider %q not found in providers", c.LLM.DefaultProvider)
+		}
+	}
+	for name, ch := range c.Channels {
+		if !ch.Enabled {
+			continue
+		}
+		// webhook 渠道强制要求 token（与认证层"缺密钥即拒绝启动"的口径一致）
+		if name == "webhook" && ch.Token == "" {
+			return fmt.Errorf("config: 渠道 %q 已启用但缺少 token（不允许无认证端点）", name)
 		}
 	}
 	return nil

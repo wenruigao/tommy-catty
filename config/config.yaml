@@ -232,3 +232,22 @@ work_dir: "."
 #       # headers:
 #       #   Authorization: "Bearer ${MCP_REMOTE_TOKEN}"
 #       # tool_prefix: "remote_"      # 工具名前缀（默认 "<name>_"）
+
+# ────────────────────────────────────────────────────────────
+# Channel 接入层（通用渠道，对齐 OpenClaw 的 Channel 机制）
+# ────────────────────────────────────────────────────────────
+# key 为渠道名，当前内置 "webhook" 通用渠道（标准 HTTP 接收 +
+# callback_url 异步投递），任何系统（含 OpenClaw 类网关）可直接接入。
+# 会话键为 "渠道名:用户/群ID"，与 HTTP X-User-ID 身份隔离，
+# per-user 限流、安全门禁与审计按会话键天然生效。
+# 未配置 channels 时接入层不启动，行为与旧版完全一致。
+#
+# channels:
+#   webhook:
+#     enabled: true
+#     token: "${CHANNEL_WEBHOOK_TOKEN}"  # 必填，调用方经 Authorization: Bearer <token> 携带
+#     # callback_url: "http://localhost:9000/callback"  # 默认投递地址（单次请求可覆盖）
+#     allow_users: ["*"]                 # 空或 ["*"] = 不限制
+#     group_mode: mention_only           # always | mention_only | never
+#     ack_message: "收到，处理中…"        # 受理提示（空则不发）
+#     request_timeout: 120s              # 单条消息执行超时

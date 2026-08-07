@@ -18,6 +18,7 @@ import (
 
 	"github.com/tommy-cat/agent/config"
 	"github.com/tommy-cat/agent/internal/bootstrap"
+	"github.com/tommy-cat/agent/internal/channel"
 	"github.com/tommy-cat/agent/internal/ctxmgr"
 	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
@@ -255,11 +256,26 @@ func main() {
 	// chat 请求进入 handler 前做 task_start 策略评估（deny 直接返回 400）
 	guarded := taskStartGuard(secEngine, authed)
 
+	// 外层路由：/api/* 经认证与安全策略；/channels/* 为渠道接入层（独立令牌鉴权，
+	// 不走 /api 的认证中间件，与 OpenClaw 的 Channel 独立路由口径一致）
+	rootMux := http.NewServeMux()
+	rootMux.Handle("/api/", guarded)
+
+	// Channel 接入层：未配置 channels 时完全不启动，行为与旧版一致
+	channelHub := buildChannels(cfg, sessionMgr, rootMux)
+	if channelHub != nil {
+		if err := channelHub.Start(context.Background()); err != nil {
+			log.Printf("警告: 渠道接入层启动失败: %v", err)
+		} else {
+			defer channelHub.Stop()
+		}
+	}
+
 	// HTTP 服务
 	addr := cfg.Server.Addr
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      guarded,
+		Handler:      rootMux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second, // Agent 执行可能较长
 		IdleTimeout:  120 * time.Second,
@@ -335,6 +351,65 @@ func (a *llmAdapter) Chat(ctx context.Context, messages []llm.Message, tools []l
 		Tools:    tools,
 	}
 	return a.gateway.Chat(ctx, req)
+}
+
+// buildChannels 按配置装配 Channel 接入层（对齐 OpenClaw 的 Channel 契约：
+// 统一注册、独立路由、独立鉴权）。无启用渠道时返回 nil（接入层完全不启动）。
+// 当前内置 webhook 通用渠道；其他渠道名待对应 adapter 实现，仅警告跳过。
+func buildChannels(cfg *config.Config, sm *session.SessionManager, mux *http.ServeMux) *channel.Hub {
+	if len(cfg.Channels) == 0 {
+		return nil
+	}
+	hub := channel.NewHub(
+		// 会话键（"channel:xxx" 形式）直接作为 SessionManager 的 userID：
+		// per-user 限流、门禁与审计按会话键天然生效
+		func(userID string) channel.SessionRunner { return sm.GetOrCreate(userID) },
+		channel.DefaultHubConfig(),
+	)
+
+	enabled := 0
+	for name, entry := range cfg.Channels {
+		if !entry.Enabled {
+			continue
+		}
+		cc := channel.ChannelConfig{
+			AllowUsers: entry.AllowUsers,
+			GroupMode:  entry.GroupMode,
+			AckMessage: entry.AckMessage,
+		}
+		if entry.RequestTimeout != "" {
+			if d, err := time.ParseDuration(entry.RequestTimeout); err == nil {
+				cc.RequestTimeout = d
+			} else {
+				log.Printf("警告: 渠道 %q 的 request_timeout %q 非法，使用默认值", name, entry.RequestTimeout)
+			}
+		}
+
+		var ch channel.Channel
+		switch name {
+		case "webhook":
+			wh, err := channel.NewWebhookChannel(channel.WebhookConfig{
+				Token:       entry.Token,
+				CallbackURL: entry.CallbackURL,
+			}, mux)
+			if err != nil {
+				log.Printf("警告: 渠道 %q 初始化失败: %v", name, err)
+				continue
+			}
+			ch = wh
+		default:
+			log.Printf("警告: 渠道 %q 尚无对应 adapter 实现，跳过", name)
+			continue
+		}
+		hub.Register(name, ch, cc)
+		enabled++
+	}
+
+	if enabled == 0 {
+		return nil
+	}
+	fmt.Printf("  📨 渠道接入层: 已启用 %d 个渠道（接收端点 POST /channels/webhook）\n", enabled)
+	return hub
 }
 
 // srvSearchAdapter 将 search.Manager 适配为 tool.Searcher 接口
