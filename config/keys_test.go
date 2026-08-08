@@ -2,6 +2,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -175,5 +178,74 @@ func TestKeyRegistry_SecretMarked(t *testing.T) {
 		if spec.Get == nil || spec.Set == nil {
 			t.Errorf("键 %s 缺少 Get/Set 函数", spec.Key)
 		}
+	}
+}
+
+// TestSchemaText 验证 schema 输出含静态键、枚举可选值、密钥标记与动态键展开。
+func TestSchemaText(t *testing.T) {
+	out := SchemaText(nil)
+	for _, want := range []string{"engine.max_iterations", "search.default_engine", "enum(duckduckgo/tavily)", "🔒"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("SchemaText 应包含 %q", want)
+		}
+	}
+
+	cfg := &Config{}
+	cfg.LLM.Providers = map[string]ProviderEntry{"mimo": {}}
+	out = SchemaText(cfg)
+	if !strings.Contains(out, "llm.providers.mimo.model") || !strings.Contains(out, "llm.providers.mimo.api_key") {
+		t.Error("SchemaText 应展开供应商动态键")
+	}
+}
+
+// TestValidateFile 验证配置校验：全通过 / ${ENV} 缺失警告 / 覆盖层非法值 / 坏 YAML。
+func TestValidateFile(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := writeTempConfig(t, dir, "config.yaml", "engine:\n  max_iterations: 10\n")
+
+	if issues := ValidateFile(mainPath); len(issues) != 0 {
+		t.Errorf("合法配置应通过校验，得到: %v", issues)
+	}
+
+	// ${ENV} 引用缺失 → 警告
+	if err := os.WriteFile(mainPath, []byte("search:\n  tavily_api_key: \"${TEST_VALIDATE_MISSING_ENV}\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issues := ValidateFile(mainPath)
+	found := false
+	for _, s := range issues {
+		if strings.Contains(s, "TEST_VALIDATE_MISSING_ENV") && strings.Contains(s, "警告") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("缺失环境变量应产生警告: %v", issues)
+	}
+
+	// 覆盖层非法值 → 错误
+	if err := os.WriteFile(mainPath, []byte("engine:\n  max_iterations: 10\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, OverlayFileName), []byte("engine:\n  max_iterations: abc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issues = ValidateFile(mainPath)
+	foundErr := false
+	for _, s := range issues {
+		if strings.Contains(s, "max_iterations") && strings.Contains(s, "错误") {
+			foundErr = true
+		}
+	}
+	if !foundErr {
+		t.Errorf("覆盖层非法值应报错: %v", issues)
+	}
+
+	// 坏 YAML → 加载失败
+	if err := os.WriteFile(mainPath, []byte("llm: [broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issues = ValidateFile(mainPath)
+	if len(issues) == 0 || !strings.Contains(issues[0], "错误") {
+		t.Errorf("坏 YAML 应报错: %v", issues)
 	}
 }

@@ -4,9 +4,13 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/tommy-cat/agent/internal/llm"
 )
@@ -21,6 +25,23 @@ const (
 	KindDuration
 	KindEnum
 )
+
+// kindText Kind 的可读文本（schema 输出用）
+func kindText(k KeyKind) string {
+	switch k {
+	case KindString:
+		return "string"
+	case KindInt:
+		return "int"
+	case KindBool:
+		return "bool"
+	case KindDuration:
+		return "duration"
+	case KindEnum:
+		return "enum"
+	}
+	return "unknown"
+}
 
 // KeySpec 描述一个可配置键
 type KeySpec struct {
@@ -398,6 +419,117 @@ func ParseNative(spec *KeySpec, value string) any {
 		return value == "true"
 	}
 	return value
+}
+
+// SchemaText 输出键注册表说明（静态键 + cfg 中各供应商的动态键），
+// 含类型、说明、枚举可选值与密钥标记，供 /config schema 展示。
+func SchemaText(cfg *Config) string {
+	static := AllKeySpecs()
+	specs := make([]*KeySpec, 0, len(static)+8)
+	for i := range static {
+		specs = append(specs, &static[i])
+	}
+	if cfg != nil {
+		for name := range cfg.LLM.Providers {
+			for _, field := range ProviderFields {
+				if spec := LookupProviderKey("llm.providers." + name + "." + field); spec != nil {
+					specs = append(specs, spec)
+				}
+			}
+		}
+	}
+	sort.Slice(specs, func(i, j int) bool { return specs[i].Key < specs[j].Key })
+
+	var sb strings.Builder
+	sb.WriteString("  ⚙️  配置键 Schema（类型 | 密钥 | 说明）\n")
+	for _, spec := range specs {
+		kind := kindText(spec.Kind)
+		if spec.Kind == KindEnum {
+			kind += "(" + strings.Join(spec.EnumValues, "/") + ")"
+		}
+		secret := " "
+		if spec.Secret {
+			secret = "🔒"
+		}
+		fmt.Fprintf(&sb, "    %-46s %-22s %s  %s\n", spec.Key, kind, secret, spec.Desc)
+	}
+	sb.WriteString("  🔒 = 秘密键（展示脱敏，建议以 ${ENV} 或 env:NAME 引用）\n")
+	return sb.String()
+}
+
+// ValidateFile 校验主配置 + 覆盖层的合法性，返回问题清单（空 = 全部通过）：
+// YAML 语法与结构解析错误、${ENV} 引用缺失（警告）、覆盖层键的类型/语义错误。
+func ValidateFile(mainPath string) []string {
+	var issues []string
+	raw, err := LoadRawMerged(mainPath)
+	if err != nil {
+		return []string{fmt.Sprintf("错误: 配置加载失败: %v", err)}
+	}
+	merged, err := yaml.Marshal(raw)
+	if err != nil {
+		return []string{fmt.Sprintf("错误: 配置序列化失败: %v", err)}
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(merged, &cfg); err != nil {
+		// 主配置单独可解析时，结构冲突源自覆盖层：记录后继续覆盖层键级校验
+		var mainCfg Config
+		mdata, rerr := os.ReadFile(mainPath)
+		if rerr != nil || yaml.Unmarshal(mdata, &mainCfg) != nil {
+			return []string{fmt.Sprintf("错误: 配置结构解析失败: %v", err)}
+		}
+		issues = append(issues, fmt.Sprintf("错误: 覆盖层与配置结构冲突（可能类型不符）: %v", err))
+		cfg = mainCfg
+	}
+	cfg.applyDefaults()
+	scanEnvRefs(raw, "", &issues)
+
+	// 覆盖层键语义校验（类型/枚举/provider 存在性）
+	store, serr := NewOverlayStore(OverlayPath(mainPath))
+	if serr != nil {
+		issues = append(issues, fmt.Sprintf("错误: 覆盖层解析失败: %v", serr))
+	} else {
+		for _, kv := range FlattenMap(store.data, "") {
+			spec, ok := LookupKey(kv.Key)
+			if !ok {
+				issues = append(issues, fmt.Sprintf("错误: 覆盖层包含未知配置键: %s", kv.Key))
+				continue
+			}
+			v := fmt.Sprint(kv.Value)
+			if verr := ValidateValue(spec, v); verr != nil {
+				issues = append(issues, fmt.Sprintf("错误: 覆盖层键 %s: %v", kv.Key, verr))
+				continue
+			}
+			if serr := spec.Set(&cfg, v); serr != nil {
+				issues = append(issues, fmt.Sprintf("错误: 覆盖层键 %s: %v", kv.Key, serr))
+			}
+		}
+	}
+	return issues
+}
+
+// scanEnvRefs 递归扫描 ${ENV} 引用，环境变量未定义时追加警告。
+func scanEnvRefs(v any, path string, issues *[]string) {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			scanEnvRefs(child, p, issues)
+		}
+	case []any:
+		for i, child := range val {
+			scanEnvRefs(child, fmt.Sprintf("%s[%d]", path, i), issues)
+		}
+	case string:
+		if IsEnvRef(val) {
+			name := val[2 : len(val)-1]
+			if _, ok := os.LookupEnv(name); !ok {
+				*issues = append(*issues, fmt.Sprintf("警告: %s 引用的环境变量 %s 未定义", path, name))
+			}
+		}
+	}
 }
 
 // IsSecretKey 按键名片段判定是否为秘密字段。

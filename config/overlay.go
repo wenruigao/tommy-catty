@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -220,4 +221,43 @@ func (s *OverlayStore) Save() error {
 		}
 	}
 	return os.WriteFile(s.path, data, 0o644)
+}
+
+// Keys 返回覆盖层中全部叶子键的点分路径（按键名排序）。
+func (s *OverlayStore) Keys() []string {
+	keys := make([]string, 0, len(s.data))
+	for _, kv := range FlattenMap(s.data, "") {
+		keys = append(keys, kv.Key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// Clear 清空覆盖层全部内容（配合 Save 使用：空内容落盘即删除文件）。
+func (s *OverlayStore) Clear() {
+	s.data = map[string]any{}
+}
+
+// KV 展平后的键值对
+type KV struct {
+	Key   string
+	Value any
+}
+
+// FlattenMap 将嵌套 map 展平为点分键路径的叶子键值对；
+// 复杂叶子（map/切片）原样保留由调用方识别拒绝，键序不稳定需调用方自行排序。
+func FlattenMap(m map[string]any, prefix string) []KV {
+	var out []KV
+	for k, v := range m {
+		key := k
+		if prefix != "" {
+			key = prefix + "." + k
+		}
+		if child, ok := v.(map[string]any); ok {
+			out = append(out, FlattenMap(child, key)...)
+			continue
+		}
+		out = append(out, KV{Key: key, Value: v})
+	}
+	return out
 }

@@ -188,7 +188,7 @@ POST /api/v1/chat
 | `channels` | 渠道接入层（8 种渠道声明式配置） |
 | `policy_file` / `audit_log_path` / `skill_store_path` / `work_dir` | 安全与持久化路径 |
 
-**覆盖层（overlay）**：与主配置同目录的 `config.local.yaml` 作为本地覆盖层，加载优先级 内置默认 < `config.yaml` < `config.local.yaml`。CLI `/config set/unset` 仅读写覆盖层（白名单键、类型校验、密钥脱敏），主配置文件永不改动；HTTP 与 CLI 共用同一加载入口 `config.LoadWithOverlay`。
+**覆盖层（overlay）**：与主配置同目录的 `config.local.yaml` 作为本地覆盖层，加载优先级 内置默认 < `config.yaml` < `config.local.yaml`。CLI `/config` 命令族（set/unset/patch/reset/schema/validate，参考 OpenClaw config 模块设计）仅读写覆盖层（白名单键、类型校验、密钥脱敏、`env:NAME` 环境变量引用、补丁原子写入），主配置文件永不改动；HTTP 与 CLI 共用同一加载入口 `config.LoadWithOverlay`。
 
 ## 6. 部署形态
 
@@ -204,7 +204,7 @@ POST /api/v1/chat
 - 本次接线完成的五项子系統：语义缓存 L1、Token 计量/预算、db_query 结果缓存、Skill 生成门控与版本快照、记忆模块 P2 标注
 - Channel 接入层与 7 平台 adapter + 通用 webhook
 - 观测面：trace、审计 JSONL、`GET /api/v1/usage`
-- CLI `/config` 运行时配置管理（overlay 覆盖层持久化 + 键白名单校验 + 脱敏与审计）
+- CLI `/config` 运行时配置管理（overlay 覆盖层持久化 + 键白名单校验 + 脱敏与审计；schema/validate/patch/reset 与 `env:` 引用，参考 OpenClaw config 模块）
 
 ### P2 路线图（未实现，代码中已标注）
 

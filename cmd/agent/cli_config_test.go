@@ -197,3 +197,118 @@ func TestConfigManager_ListMarksSource(t *testing.T) {
 	}
 	t.Error("List 应包含 engine.max_iterations 行")
 }
+
+// TestConfigManager_SetEnvRef 验证 env:NAME 写法转写为 ${NAME} 且不触发明文警告。
+func TestConfigManager_SetEnvRef(t *testing.T) {
+	mgr, dir := newTestConfigManager(t)
+
+	msg, err := mgr.Set("search.tavily_api_key", "env:TAVILY_API_KEY")
+	if err != nil {
+		t.Fatalf("set env 引用失败: %v", err)
+	}
+	if strings.Contains(msg, "明文") {
+		t.Errorf("env 引用不应触发明文警告: %s", msg)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, config.OverlayFileName))
+	if err != nil || !strings.Contains(string(data), "${TAVILY_API_KEY}") {
+		t.Errorf("覆盖层应保存 ${TAVILY_API_KEY} 引用: %v %s", err, data)
+	}
+
+	if _, err := mgr.Set("search.tavily_api_key", "env:9bad"); err == nil {
+		t.Error("非法 env 引用应报错")
+	}
+}
+
+// TestConfigManager_Patch 验证批量补丁：正常应用 / 部分非法整体拒绝 / 复杂结构拒绝。
+func TestConfigManager_Patch(t *testing.T) {
+	mgr, dir := newTestConfigManager(t)
+
+	patch := filepath.Join(dir, "patch.yaml")
+	if err := os.WriteFile(patch, []byte("engine:\n  max_iterations: 8\nsearch:\n  max_results: 3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	msg, err := mgr.Patch(patch)
+	if err != nil {
+		t.Fatalf("patch 失败: %v", err)
+	}
+	if !strings.Contains(msg, "2 项补丁") {
+		t.Errorf("应提示 2 项补丁: %s", msg)
+	}
+	if mgr.cfg.Engine.MaxIterations != 8 || mgr.cfg.Search.MaxResults != 3 {
+		t.Errorf("内存配置应更新: %d %d", mgr.cfg.Engine.MaxIterations, mgr.cfg.Search.MaxResults)
+	}
+
+	// 部分非法 → 整体拒绝且不写入任何变更
+	if err := os.WriteFile(patch, []byte("engine:\n  max_iterations: abc\nsearch:\n  max_results: 9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Patch(patch); err == nil {
+		t.Error("含非法值的补丁应整体拒绝")
+	}
+	if mgr.cfg.Search.MaxResults != 3 {
+		t.Errorf("拒绝后不应写入任何变更，得到 %d", mgr.cfg.Search.MaxResults)
+	}
+
+	// 复杂结构（列表叶子）→ 拒绝
+	if err := os.WriteFile(patch, []byte("session:\n  limits: [1, 2]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Patch(patch); err == nil || !strings.Contains(err.Error(), "复杂结构") {
+		t.Errorf("复杂结构补丁应报错: %v", err)
+	}
+}
+
+// TestConfigManager_Reset 验证清空覆盖层全部覆盖项并恢复默认。
+func TestConfigManager_Reset(t *testing.T) {
+	mgr, dir := newTestConfigManager(t)
+
+	if _, err := mgr.Set("engine.max_iterations", "5"); err != nil {
+		t.Fatalf("set 失败: %v", err)
+	}
+	if _, err := mgr.Set("search.max_results", "9"); err != nil {
+		t.Fatalf("set 失败: %v", err)
+	}
+	msg, err := mgr.Reset()
+	if err != nil {
+		t.Fatalf("reset 失败: %v", err)
+	}
+	if !strings.Contains(msg, "已清空") {
+		t.Errorf("应提示已清空: %s", msg)
+	}
+	if mgr.cfg.Engine.MaxIterations != 10 {
+		t.Errorf("reset 后应恢复主配置值 10，得到 %d", mgr.cfg.Engine.MaxIterations)
+	}
+	if _, err := os.Stat(filepath.Join(dir, config.OverlayFileName)); !os.IsNotExist(err) {
+		t.Errorf("覆盖层文件应被删除: %v", err)
+	}
+
+	msg, err = mgr.Reset()
+	if err != nil || !strings.Contains(msg, "无需 reset") {
+		t.Errorf("空覆盖层 reset 应提示无需操作: %v %s", err, msg)
+	}
+}
+
+// TestConfigManager_ListSection 验证按节过滤清单。
+func TestConfigManager_ListSection(t *testing.T) {
+	mgr, _ := newTestConfigManager(t)
+
+	list := mgr.ListSection("engine")
+	if !strings.Contains(list, "engine.max_iterations") {
+		t.Error("engine 节应包含 engine.max_iterations")
+	}
+	if strings.Contains(list, "session.ttl") {
+		t.Error("engine 节不应包含 session 键")
+	}
+	if msg := mgr.ListSection("nope"); !strings.Contains(msg, "没有匹配") {
+		t.Errorf("未知节应提示无匹配: %s", msg)
+	}
+}
+
+// TestConfigManager_Validate 验证合法配置校验通过。
+func TestConfigManager_Validate(t *testing.T) {
+	mgr, _ := newTestConfigManager(t)
+	t.Setenv("DASHSCOPE_API_KEY", "test-value")
+	if msg := mgr.Validate(); !strings.Contains(msg, "校验通过") {
+		t.Errorf("合法配置应通过校验: %s", msg)
+	}
+}
