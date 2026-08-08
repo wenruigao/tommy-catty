@@ -337,7 +337,7 @@ func handleCommand(input string, cfg *config.Config, store *skill.Store, matcher
     /policies      列出安全策略
     /trace         查看最近一次执行的追踪信息
     /clear         清空记忆
-    /config        查看/管理配置（get/set/unset/use/path）`)
+    /config        查看/管理配置（get/set/unset/use/path/schema/validate/patch/reset）`)
 	case "/doctor":
 		runDoctor(cfg)
 	case "/skills":

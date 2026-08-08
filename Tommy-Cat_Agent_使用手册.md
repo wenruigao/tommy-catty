@@ -80,18 +80,22 @@ config.yaml 中一律写 `${VAR}` 引用，不要把真实 Key 写进配置文�
 
 | 命令 | 作用 |
 |------|------|
-| `/config` | 列出全部可配置键：当前生效值 + 来源标记（`[local]`/`[config]`），密钥自动脱敏 |
+| `/config` | 列出全部可配置键：当前生效值 + 来源标记（`[local]`/`[config]`），密钥自动脱敏；`/config <节名>` 过滤（如 `llm`/`engine`/`search`） |
 | `/config get <key>` | 查看单键详情（值、来源、说明） |
-| `/config set <key> <值>` | 设置并持久化 |
+| `/config set <key> <值>` | 设置并持久化；秘密键可用 `env:ENV_NAME` 写法引用环境变量（落盘为 `${ENV_NAME}`，不落明文） |
 | `/config unset <key>` | 移除覆盖，恢复主配置/默认值 |
 | `/config use <provider>` | 快捷切换默认模型供应商 |
+| `/config patch <file>` | 按 YAML 补丁文件批量设置（先全量校验，任一非法整体拒绝，原子写入） |
+| `/config reset` | 清空覆盖层全部覆盖项（主配置永不触碰） |
+| `/config schema` | 打印键注册表：类型、枚举可选值、密钥标记与说明 |
+| `/config validate` | 校验主配置 + 覆盖层：YAML 语法、`${ENV}` 引用缺失（警告）、覆盖层键的类型/语义（错误） |
 | `/config path` | 显示主配置文件与覆盖层文件路径 |
 
 **持久化机制（overlay 覆盖层）**：变更写入与主配置同目录的 `config.local.yaml`（已加入 `.gitignore`），主配置文件（含注释）永不改动。加载优先级：内置默认 < `config.yaml` < `config.local.yaml`。全部覆盖项清空后覆盖层文件自动删除。
 
 **键白名单**：仅常用标量键可经 `/config` 修改（LLM 供应商/缓存/计量、引擎、搜索、会话、画像、工作目录等约 20 个静态键 + 各供应商的 `model`/`base_url`/`max_tokens`/`timeout`/`api_key` 动态键）；channels/databases/mcp 等复杂结构仍手工编辑主配置。未知键报错并提示最相近键名，类型非法（int/duration/enum）给出中文错误。
 
-**密钥安全**：键名含 api_key/token/secret/dsn/password 的值显示为脱敏形式（`${ENV}` 引用原样展示）；以明文写入秘密键时给出警告（建议改用 `${ENV_VAR}` 引用）；set/unset 操作写入审计日志（仅记键名，值不落盘）。
+**密钥安全**：键名含 api_key/token/secret/dsn/password 的值显示为脱敏形式（`${ENV}` 引用原样展示）；以明文写入秘密键时给出警告（建议改用 `env:ENV_NAME` 或 `${ENV_VAR}` 引用）；set/unset/patch/reset 操作写入审计日志（仅记键名，值不落盘）。
 
 **生效方式**：变更立即写入文件并同步内存中的配置视图，但运行中的组件（Gateway/Engine 等）统一在**重启后生效**。
 
