@@ -22,6 +22,7 @@ import (
 	"github.com/tommy-cat/agent/internal/ctxmgr"
 	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/tommy-cat/agent/internal/memstore"
 	"github.com/tommy-cat/agent/internal/search"
 	"github.com/tommy-cat/agent/internal/security"
 	"github.com/tommy-cat/agent/internal/server"
@@ -156,6 +157,24 @@ func main() {
 		fmt.Printf("  ⚠️  %v\n", err)
 	}
 
+	// 初始化记忆存储后端（长期记忆 + 用户画像持久化；失败降级为纯内存并警告）
+	memStore, merr := memstore.Open(memstore.Config{
+		Type:              cfg.Memory.Storage.Type,
+		FileDir:           cfg.Memory.Storage.Path,
+		ProfilesDir:       cfg.Persona.UserProfilesDir,
+		SQLitePath:        cfg.Memory.Storage.Path,
+		URL:               cfg.Memory.Storage.URL,
+		Token:             cfg.Memory.Storage.Token,
+		Timeout:           cfg.MemoryTimeoutDuration(),
+		MaxEntriesPerUser: cfg.Memory.MaxEntriesPerUser,
+	})
+	if merr != nil {
+		fmt.Printf("  ⚠️  记忆存储后端初始化失败: %v（降级为纯内存）\n", merr)
+		memStore = nil
+	} else {
+		defer memStore.Close()
+	}
+
 	// 用户画像生成器（每完成 N 次任务用 LLM 更新 user.md，失败静默）
 	profiler := session.NewUserProfiler(
 		cfg.Persona.UserProfilesDir,
@@ -168,6 +187,7 @@ func main() {
 			return resp.Content, nil
 		},
 	)
+	profiler.SetStore(memStore)
 
 	deps := session.SessionDeps{
 		LLM:           llmAdp,
@@ -196,6 +216,7 @@ func main() {
 		SoulMD:          soulMD,
 		UserProfilesDir: cfg.Persona.UserProfilesDir,
 		Profiler:        profiler,
+		MemStore:        memStore,
 		// Skill 匹配：命中时将已验证的执行经验拼接到目标之前
 		SkillHintProvider: func(input string) string {
 			if matched, score := skillMatcher.Match(input); matched != nil && score > 0.6 {

@@ -280,6 +280,41 @@ var keyRegistry = []KeySpec{
 			return nil
 		},
 	},
+	{
+		Key: "memory.storage.type", Kind: KindEnum, EnumValues: []string{"file", "sqlite", "remote"},
+		Desc: "记忆存储后端（file 本地 JSONL / sqlite 本地数据库 / remote 远程服务）",
+		Get:  func(c *Config) string { return c.Memory.Storage.Type },
+		Set: func(c *Config, v string) error {
+			c.Memory.Storage.Type = v
+			return nil
+		},
+	},
+	{
+		Key: "memory.storage.path", Kind: KindString, Desc: "记忆存储路径（file 为 JSONL 目录，sqlite 为数据库文件）",
+		Get: func(c *Config) string { return c.Memory.Storage.Path },
+		Set: func(c *Config, v string) error {
+			c.Memory.Storage.Path = v
+			return nil
+		},
+	},
+	{
+		Key: "memory.storage.url", Kind: KindString, Desc: "远程记忆服务地址（remote 后端，如 http://mem.internal:9301）",
+		Get: func(c *Config) string { return displayOr(c.Memory.Storage.URL, "(未设置)") },
+		Set: func(c *Config, v string) error {
+			c.Memory.Storage.URL = v
+			return nil
+		},
+	},
+	{
+		Key: "memory.max_entries_per_user", Kind: KindInt, Desc: "每用户长期记忆上限",
+		Validate: positiveInt("记忆上限"),
+		Get:      func(c *Config) string { return strconv.Itoa(c.Memory.MaxEntriesPerUser) },
+		Set: func(c *Config, v string) error {
+			n, _ := strconv.Atoi(v)
+			c.Memory.MaxEntriesPerUser = n
+			return nil
+		},
+	},
 }
 
 // AllKeySpecs 返回静态键注册表的副本（供列表展示）。

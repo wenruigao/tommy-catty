@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/tommy-cat/agent/internal/memstore"
 )
 
 // profilerHistoryLimit 送给 LLM 总结的最近会话消息条数上限。
@@ -25,6 +26,7 @@ type UserProfiler struct {
 	dir      string           // 用户画像根目录（如 data/users）
 	interval int              // 每完成多少次 Run 更新一次画像
 	chatFn   ProfilerChatFunc // 可为 nil（nil 时禁用画像生成）
+	store    memstore.Store   // 记忆存储后端（非 nil 时画像经后端读写，可为 nil）
 
 	mu     sync.Mutex     // 防并发写同一画像文件
 	counts map[string]int // 每用户已完成的 Run 计数
@@ -45,10 +47,18 @@ func NewUserProfiler(dir string, interval int, chatFn ProfilerChatFunc) *UserPro
 	}
 }
 
+// SetStore 注入记忆存储后端；注入后画像读写优先经后端（file 后端与本地文件路径一致，
+// sqlite/remote 后端实现多实例共享），后端失败时回退本地文件。
+func (p *UserProfiler) SetStore(store memstore.Store) {
+	if p != nil {
+		p.store = store
+	}
+}
+
 // OnRunComplete 在一次 Run 完成后调用；累计达到更新间隔时，
 // 用 LLM 总结该用户最近会话并更新 user.md。任何失败都静默忽略。
 func (p *UserProfiler) OnRunComplete(ctx context.Context, userID string, history []llm.Message) {
-	if p == nil || p.chatFn == nil || p.dir == "" {
+	if p == nil || p.chatFn == nil || (p.dir == "" && p.store == nil) {
 		return
 	}
 
@@ -87,8 +97,8 @@ func (p *UserProfiler) update(ctx context.Context, userID string, history []llm.
 		return
 	}
 
-	// 已存在画像时一并提供，要求 LLM 保留仍有效的旧偏好
-	oldProfile := loadUserProfile(p.dir, userID)
+	// 已存在画像时一并提供，要求 LLM 保留仍有效的旧偏好（后端优先，回退本地文件）
+	oldProfile := loadUserProfileVia(p.store, p.dir, userID)
 
 	userPrompt := "以下是该用户最近的会话记录：\n" + convo.String()
 	if oldProfile != "" {
@@ -110,6 +120,15 @@ func (p *UserProfiler) update(ctx context.Context, userID string, history []llm.
 		return // 失败静默，保留旧画像
 	}
 
+	// 画像落盘：注入存储后端时经后端写入（失败回退本地文件），否则直接写本地
+	if p.store != nil {
+		if err := p.store.SaveProfile(ctx, userID, profile); err == nil {
+			return
+		}
+	}
+	if p.dir == "" {
+		return
+	}
 	path := userProfilePath(p.dir, userID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return

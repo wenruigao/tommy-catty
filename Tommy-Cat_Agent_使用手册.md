@@ -93,7 +93,7 @@ config.yaml 中一律写 `${VAR}` 引用，不要把真实 Key 写进配置文�
 
 **持久化机制（overlay 覆盖层）**：变更写入与主配置同目录的 `config.local.yaml`（已加入 `.gitignore`），主配置文件（含注释）永不改动。加载优先级：内置默认 < `config.yaml` < `config.local.yaml`。全部覆盖项清空后覆盖层文件自动删除。
 
-**键白名单**：仅常用标量键可经 `/config` 修改（LLM 供应商/缓存/计量、引擎、搜索、会话、画像、工作目录等约 20 个静态键 + 各供应商的 `model`/`base_url`/`max_tokens`/`timeout`/`api_key` 动态键）；channels/databases/mcp 等复杂结构仍手工编辑主配置。未知键报错并提示最相近键名，类型非法（int/duration/enum）给出中文错误。
+**键白名单**：仅常用标量键可经 `/config` 修改（LLM 供应商/缓存/计量、引擎、搜索、会话、画像、记忆存储、工作目录等约 24 个静态键 + 各供应商的 `model`/`base_url`/`max_tokens`/`timeout`/`api_key` 动态键）；channels/databases/mcp 等复杂结构仍手工编辑主配置。未知键报错并提示最相近键名，类型非法（int/duration/enum）给出中文错误。
 
 **密钥安全**：键名含 api_key/token/secret/dsn/password 的值显示为脱敏形式（`${ENV}` 引用原样展示）；以明文写入秘密键时给出警告（建议改用 `env:ENV_NAME` 或 `${ENV_VAR}` 引用）；set/unset/patch/reset 操作写入审计日志（仅记键名，值不落盘）。
 
@@ -315,7 +315,21 @@ policies:
 
 ## 10. 记忆与 Persona
 
-- **工作记忆**：会话内多轮上下文，`/clear` 或 `POST /clear` 清空；长期记忆为 P2 未实现
+- **工作记忆**：会话内多轮上下文，`/clear` 或 `POST /clear` 清空（同时清空该用户长期记忆）
+- **长期记忆**：对话内容经记忆存储后端持久化，会话重建后仍可检索；语义矛盾的旧条目自动标记失效（sqlite 后端），每用户上限 `memory.max_entries_per_user`（默认 500，超限按时间淘汰）
+- **记忆存储后端**（`memory.storage.type`）：`file`（默认，`data/memories/{userID}.jsonl`）/ `sqlite`（`data/memory.db`）/ `remote`（远程记忆服务，需先启动 `go run ./cmd/memstore serve`，配置 `url` 与 `token`）；用户画像随同后端存放（file 后端沿用 `data/users/{userID}/user.md`，路径不变）
+
+  ```yaml
+  memory:
+    storage:
+      type: sqlite            # file / sqlite / remote
+      path: data/memory.db    # sqlite 数据库路径（file 时为 JSONL 目录）
+      # url: http://mem.internal:9301   # remote 后端服务地址
+      # token: ${MEMSTORE_TOKEN}        # remote 鉴权令牌，支持 ${ENV}
+      # timeout: 3s
+    max_entries_per_user: 500
+  ```
+
 - **Persona 三段式**：
   - `config/agent.md` — 职责与权限边界，**最高优先级**，用户指令不得覆盖
   - `config/soul.md` — 人格与对话风格

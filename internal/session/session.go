@@ -12,6 +12,7 @@ import (
 	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
 	"github.com/tommy-cat/agent/internal/memory"
+	"github.com/tommy-cat/agent/internal/memstore"
 	"github.com/tommy-cat/agent/internal/tool"
 	"github.com/tommy-cat/agent/internal/trace"
 )
@@ -81,6 +82,8 @@ type SessionDeps struct {
 	UserProfilesDir string
 	// Profiler 用户画像生成器（nil 则禁用画像生成）
 	Profiler *UserProfiler
+	// MemStore 记忆存储后端（长期记忆 + 用户画像持久化；nil 则仅工作记忆，与旧行为一致）
+	MemStore memstore.Store
 	// SkillHintProvider Skill 匹配提示（nil 或不命中则不拼接）。
 	// 返回非空时，提示文本会拼接到用户目标之前一并交给引擎。
 	SkillHintProvider func(input string) string
@@ -96,21 +99,23 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 	}
 
 	working := memory.NewWorkingMemory(memSize)
-	// P2：长期记忆（情景/语义/向量库）尚未实现，此处传 nil 仅使用工作记忆；
-	// memory/conflict.go（时间戳优先/置信度衰减/矛盾检测）为其预留，届时在记忆写入/检索链路接线
-	combined := memory.NewCombinedMemory(working, nil)
+	// 长期记忆：注入 MemStore 时经适配器持久化（file/sqlite/remote 后端），
+	// 冲突消解（conflict.ResolveConflict）已在 sqlite 后端写入链路接线；
+	// MemStore 为 nil 时退化为纯工作记忆（与旧行为一致）
+	longTerm := memstore.NewMemoryAdapter(deps.MemStore, userID)
+	combined := memory.NewCombinedMemory(working, longTerm)
 	ctxMgr := ctxmgr.NewManager(deps.CtxConfig, deps.Summarizer)
 
 	// 人格装配：配置了 agent.md / soul.md / 用户画像目录时，
 	// 每次 Run 动态生成系统提示词（用户画像每次读取最新文件）。
 	var promptProvider func() string
-	if deps.AgentMD != "" || deps.SoulMD != "" || deps.UserProfilesDir != "" {
+	if deps.AgentMD != "" || deps.SoulMD != "" || deps.UserProfilesDir != "" || deps.MemStore != nil {
 		basePrompt := deps.SystemPrompt
 		if basePrompt == "" {
 			basePrompt = DefaultBasePrompt
 		}
 		promptProvider = func() string {
-			userMD := loadUserProfile(deps.UserProfilesDir, userID)
+			userMD := loadUserProfileVia(deps.MemStore, deps.UserProfilesDir, userID)
 			return BuildSystemPrompt(deps.AgentMD, basePrompt, deps.SoulMD, userMD)
 		}
 	}
