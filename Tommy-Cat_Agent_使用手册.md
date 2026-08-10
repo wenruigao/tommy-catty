@@ -382,6 +382,39 @@ mcp:
 
 `search.default_engine`: `duckduckgo`（默认，免 Key）或 `tavily`（配 `tavily_api_key`，效果更好；Key 错误自动 fallback）。
 
+### 11.5 远程记忆服务（memstore）
+
+多实例部署需要共享长期记忆与用户画像时，在中心机器部署独立的记忆存储服务，各 Agent 实例改用 `remote` 后端（配置见第 10 节）。
+
+**1）启动服务**（落地后端可选 sqlite 或 file）：
+
+```bash
+go build -o bin/tommy-memstore ./cmd/memstore
+export MEMSTORE_TOKEN=<强随机串>
+./bin/tommy-memstore serve -addr :9301 -token $MEMSTORE_TOKEN -backend sqlite -db data/memory.db
+```
+
+**2）Agent 实例接入**（`config/config.yaml`）：
+
+```yaml
+memory:
+  storage:
+    type: remote
+    url: http://mem.internal:9301
+    token: ${MEMSTORE_TOKEN}   # 支持 ${ENV} 引用；token 自动脱敏展示
+```
+
+**3）验证**：`/doctor` 中 Memory storage 项应显示 `[OK] <url>`；错误令牌或地址不通时该项报错，Agent 记忆链路自动降级（写入失败仅警告，不阻塞任务）。
+
+**存量迁移**：将本地已生成的用户画像一次性导入目标后端：
+
+```bash
+./bin/tommy-memstore migrate -from data/users -to sqlite -db data/memory.db
+# 或导入远程服务：-to remote -url http://mem.internal:9301 -token $MEMSTORE_TOKEN
+```
+
+> 说明：长期记忆无存量（JSONL/数据库为新增格式），迁移仅针对画像；同一用户跨实例并发写入按 last-write-wins 处理。
+
 ## 12. 可观测
 
 | 手段 | 用法 |
@@ -390,7 +423,7 @@ mcp:
 | 审计日志 | `data/audit.jsonl`（见 8.2） |
 | Token 用量 | `GET /api/v1/usage`（分模型汇总、缓存命中率、日预算） |
 | 预算预警 | 日 Token 达预算 80% 时日志输出一次预警 |
-| 健康自检 | `/doctor`：配置、LLM 连接、策略、工具、Skill 存储、工作目录、网络、系统资源共 8 项 |
+| 健康自检 | `/doctor`：配置、LLM 连接、策略、工具、Skill 存储、记忆存储、工作目录、网络、系统资源共 9 项 |
 
 ## 13. 常见问题
 

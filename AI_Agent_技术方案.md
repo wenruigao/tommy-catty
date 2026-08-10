@@ -124,7 +124,7 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 - `SessionManager`：per-user 会话、TTL 过期与上限回收
 - per-user 限流：token bucket（`session.requests_per_minute`，默认 30），用户间互不阻塞
 - Persona 三段式系统提示词：`agent.md`（权限边界，最高优先级，用户指令不可覆盖）+ `soul.md`（人格）+ `data/users/{userID}/user.md`（每用户画像，每 N 个任务由 LLM 自动总结更新）
-- 记忆：工作记忆 + 长期记忆均已接入。长期记忆与用户画像经 `internal/memstore` 统一 Store 接口持久化，三种可切换后端：`file`（本地 JSONL，默认）/ `sqlite`（modernc.org/sqlite 纯 Go）/ `remote`（`cmd/memstore` 远程记忆服务，Bearer 鉴权）；`conflict.go` 冲突消解已在 sqlite 后端写入链路接线（语义矛盾的旧条目标记 superseded），每用户容量上限 `memory.max_entries_per_user`（默认 500）自动淘汰
+- 记忆：工作记忆 + 长期记忆均已接入，经 `internal/memstore` 统一 Store 接口持久化（存储细节见 3.9 记忆持久化）
 
 ### 3.6 Skill 系统（internal/skill）
 
@@ -157,6 +157,22 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 - 启用时必填凭证缺失直接拒绝启动（不允许无认证端点）
 - 未配置 `channels` 时接入层不启动，行为与旧版完全一致
 
+### 3.9 记忆持久化（internal/memstore）
+
+- `Store` 统一接口：长期记忆（保存/检索/最近/按用户清空）与用户画像（保存/读取）统一读写，多用户按 userID 隔离；`MemoryAdapter` 将其适配为单用户 `memory.Memory` 接口，作为 `CombinedMemory` 的长期记忆层接入引擎记忆链路
+- 三种可切换后端（`memory.storage.type`）：
+
+| 后端 | 落地位置 | 适用场景 |
+|------|----------|----------|
+| `file`（默认） | `data/memories/{userID}.jsonl` + 画像沿用 `data/users/{userID}/user.md` | 单机，与旧版路径完全兼容，零迁移 |
+| `sqlite` | `data/memory.db`（modernc.org/sqlite 纯 Go，无 CGO） | 单机要结构化查询 / 容量管理 / 冲突标记 |
+| `remote` | `cmd/memstore` 服务的落地后端（file 或 sqlite） | 多实例共享 / 集中备份 |
+
+- **remote 协议**：`/memstore/v1` REST（记忆保存/最近/检索/清空、画像读写、`healthz` 探活），业务端点要求 `Authorization: Bearer <token>`，`healthz` 免鉴权供 doctor 探活；客户端默认 3s 超时，写失败仅警告不阻塞主链路（与审计日志同策略）
+- **冲突消解接线**（P2 收尾）：sqlite 后端写入时用 `conflict.IsSemanticConflict` 与最近条目比对，语义矛盾的旧条目经 `conflict.ResolveConflict` 判定后标记 `superseded`，检索与最近列表自动排除；file/remote 后端暂不做
+- **容量治理**：每用户上限 `memory.max_entries_per_user`（默认 500），超限按时间从旧到新淘汰
+- **降级链**：存储后端初始化失败 → 纯内存运行并警告；画像读取后端未命中 → 回退本地文件
+
 ## 4. 关键数据流（HTTP chat 为例）
 
 ```
@@ -180,6 +196,7 @@ POST /api/v1/chat
 | `server` | HTTP 模式：地址、认证模式与密钥 |
 | `session` | per-user 限流 |
 | `persona` | agent.md / soul.md / 画像更新间隔 |
+| `memory` | 记忆存储后端（file/sqlite/remote、路径/url/token/timeout）与每用户容量上限 |
 | `databases` | db_query 数据源（表/列白名单、DSN） |
 | `db_query_cache` | db_query 结果缓存（默认启用，可关） |
 | `knowledge_bases` | 本地知识库（分块、BM25） |
@@ -195,6 +212,7 @@ POST /api/v1/chat
 1. **CLI 单机**：`cmd/agent`，交互式 REPL，适合本地使用与调试
 2. **HTTP 多用户**：`cmd/server`，`/api/v1/*` REST API，三种认证模式
 3. **渠道机器人**：HTTP 模式 + `channels` 配置，IM 平台消息直达 Agent
+4. **远程记忆服务（可选）**：`cmd/memstore serve` 独立部署，集中存放长期记忆与画像，各 Agent 实例配 `memory.storage.type: remote` 即可多实例共享；`cmd/memstore migrate` 可将存量 `data/users` 画像一次性导入 sqlite/remote 后端
 
 ## 7. 实现状态与路线图
 
