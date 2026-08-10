@@ -9,6 +9,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// PrewarmTag 是会话创建时预热记忆条目的标签：
+// 预热条目参与上下文构建，但不会被重复持久化。
+const PrewarmTag = "prewarm"
+
 // CombinedMemory 是组合记忆管理器，整合工作记忆和长期记忆。
 // 它实现了 engine.MemoryStore 接口，为执行引擎提供统一的记忆访问。
 type CombinedMemory struct {
@@ -64,10 +68,15 @@ func (cm *CombinedMemory) GetContext(limit int) []llm.Message {
 
 // Store 将消息存入记忆系统。
 // 同时写入工作记忆，如果长期记忆可用则也写入长期记忆。
+// 已存在于工作记忆中的内容（含会话创建时预热的历史回放）不重复落盘。
 func (cm *CombinedMemory) Store(messages []llm.Message) {
 	ctx := context.Background()
+	existing := cm.working.ContentSet()
 
 	for _, msg := range messages {
+		if existing[msg.Content] {
+			continue // 已在工作记忆中（预热回放 / 历史消息），跳过
+		}
 		entry := MemoryEntry{
 			ID:        uuid.New().String(),
 			Content:   msg.Content,

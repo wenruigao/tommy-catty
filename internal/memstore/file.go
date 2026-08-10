@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tommy-cat/agent/internal/memory"
 )
@@ -122,6 +123,24 @@ func (s *FileStore) RecentMemories(_ context.Context, userID string, limit int) 
 		}
 	}
 	return mapDTOs(out), nil
+}
+
+// PruneBefore 删除指定用户在 cutoff 之前创建的记忆（按 created_at）。
+func (s *FileStore) PruneBefore(_ context.Context, userID string, cutoff time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries := s.loadLocked(userID)
+	kept := make([]MemoryDTO, 0, len(entries))
+	for _, e := range entries {
+		if !e.CreatedAt.Before(cutoff) {
+			kept = append(kept, e)
+		}
+	}
+	if len(kept) == len(entries) {
+		return nil // 无可修剪
+	}
+	return s.writeAllLocked(userID, kept)
 }
 
 // DeleteMemories 删除该用户的记忆文件（不存在视为成功）。

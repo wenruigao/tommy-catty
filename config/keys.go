@@ -315,6 +315,32 @@ var keyRegistry = []KeySpec{
 			return nil
 		},
 	},
+	{
+		Key: "memory.prewarm_count", Kind: KindInt, Desc: "会话创建时预热的历史记忆条数",
+		Validate: positiveInt("预热条数"),
+		Get:      func(c *Config) string { return strconv.Itoa(c.Memory.PrewarmCount) },
+		Set: func(c *Config, v string) error {
+			n, _ := strconv.Atoi(v)
+			c.Memory.PrewarmCount = n
+			return nil
+		},
+	},
+	{
+		Key: "memory.storage.sqlite_retention", Kind: KindDuration, Desc: "sqlite 层保留窗口（如 168h，0=全量；未设置时按是否配远端取默认）",
+		Get: func(c *Config) string { return displayOr(c.Memory.Storage.SQLiteRetention, "(默认)") },
+		Set: func(c *Config, v string) error {
+			c.Memory.Storage.SQLiteRetention = v
+			return nil
+		},
+	},
+	{
+		Key: "memory.storage.file_retention", Kind: KindDuration, Desc: "file 层保留窗口（如 72h，0=全量；未设置时按是否配远端取默认）",
+		Get: func(c *Config) string { return displayOr(c.Memory.Storage.FileRetention, "(默认)") },
+		Set: func(c *Config, v string) error {
+			c.Memory.Storage.FileRetention = v
+			return nil
+		},
+	},
 }
 
 // AllKeySpecs 返回静态键注册表的副本（供列表展示）。

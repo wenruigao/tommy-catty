@@ -5,6 +5,7 @@ package session
 import (
 	"context"
 	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -47,6 +48,7 @@ type SessionDeps struct {
 	MaxIterations int
 	SystemPrompt  string
 	MemorySize    int // 每用户工作记忆容量
+	PrewarmCount  int // 会话创建时预热的历史记忆条数（<=0 取默认 10）
 	CtxConfig     ctxmgr.Config
 	Summarizer    ctxmgr.Summarizer // 可为 nil
 	RateLimit     RateLimitConfig
@@ -104,6 +106,38 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 	// MemStore 为 nil 时退化为纯工作记忆（与旧行为一致）
 	longTerm := memstore.NewMemoryAdapter(deps.MemStore, userID)
 	combined := memory.NewCombinedMemory(working, longTerm)
+
+	// 会话预热：注入最近长期记忆到工作记忆（带 prewarm 标签，参与上下文构建，
+	// CombinedMemory.Store 不会将其重复落盘），并加载用户画像验证可读性
+	if deps.MemStore != nil {
+		prewarmCount := deps.PrewarmCount
+		if prewarmCount <= 0 {
+			prewarmCount = 10
+		}
+		if entries, err := deps.MemStore.RecentMemories(context.Background(), userID, prewarmCount); err == nil {
+			for i := len(entries) - 1; i >= 0; i-- { // 返回为新到旧，按时间顺序写入
+				e := entries[i]
+				role := "user"
+				for _, tag := range e.Tags {
+					if tag == "assistant" {
+						role = "assistant"
+						break
+					}
+				}
+				_ = working.Store(context.Background(), memory.MemoryEntry{
+					ID:        e.ID,
+					Content:   e.Content,
+					Timestamp: e.Timestamp,
+					Tags:      append([]string{role, memory.PrewarmTag}, e.Tags...),
+				})
+			}
+		} else {
+			log.Printf("  ⚠️  session: 用户 %s 记忆预热失败: %v", userID, err)
+		}
+		// 加载用户画像（store 优先，失败回退本地文件；均无则视为新用户）
+		_ = loadUserProfileVia(deps.MemStore, deps.UserProfilesDir, userID)
+	}
+
 	ctxMgr := ctxmgr.NewManager(deps.CtxConfig, deps.Summarizer)
 
 	// 人格装配：配置了 agent.md / soul.md / 用户画像目录时，

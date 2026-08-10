@@ -141,22 +141,27 @@ func main() {
 		fmt.Printf("  ⚠️  %v\n", err)
 	}
 
-	// 初始化记忆存储后端（长期记忆 + 用户画像持久化；失败降级为纯内存并警告）
-	memStore, merr := memstore.Open(memstore.Config{
-		Type:              cfg.Memory.Storage.Type,
-		FileDir:           cfg.Memory.Storage.Path,
-		ProfilesDir:       cfg.Persona.UserProfilesDir,
-		SQLitePath:        cfg.Memory.Storage.Path,
-		URL:               cfg.Memory.Storage.URL,
-		Token:             cfg.Memory.Storage.Token,
+	// 初始化分层记忆存储（remote 全量 + sqlite/file 按保留窗口；失败降级为纯内存并警告）
+	sqlitePath := ""
+	if cfg.Memory.Storage.Type == "sqlite" {
+		sqlitePath = cfg.Memory.Storage.Path // path 键兼容：作为 sqlite 数据库路径
+	}
+	var memStore memstore.Store
+	if tiered, merr := memstore.OpenTiered(memstore.TieredConfig{
+		RemoteURL:         cfg.Memory.Storage.URL,
+		RemoteToken:       cfg.Memory.Storage.Token,
 		Timeout:           cfg.MemoryTimeoutDuration(),
+		SQLitePath:        sqlitePath,
+		ProfilesDir:       cfg.Persona.UserProfilesDir,
 		MaxEntriesPerUser: cfg.Memory.MaxEntriesPerUser,
-	})
-	if merr != nil {
-		fmt.Printf("  ⚠️  记忆存储后端初始化失败: %v（降级为纯内存）\n", merr)
-		memStore = nil
+		SQLiteRetention:   cfg.MemorySQLiteRetention(),
+		FileRetention:     cfg.MemoryFileRetention(),
+	}); merr != nil {
+		fmt.Printf("  ⚠️  分层记忆存储初始化失败: %v（降级为纯内存）\n", merr)
 	} else {
-		defer memStore.Close()
+		memStore = tiered
+		defer tiered.Close()
+		fmt.Printf("  记忆分层存储: %s\n", tiered.Mode())
 	}
 
 	// 用户画像生成器（每完成 N 次任务用 LLM 更新 user.md，失败静默）
@@ -180,6 +185,7 @@ func main() {
 		MaxIterations:   cfg.Engine.MaxIterations,
 		SystemPrompt:    buildSystemPrompt(cfg),
 		MemorySize:      cfg.Session.MemorySize,
+		PrewarmCount:    cfg.Memory.PrewarmCount,
 		CtxConfig:       ctxmgr.DefaultConfig(),
 		Summarizer:      summarizer,
 		Reflection:      cfg.Engine.Reflection.ToReflectionConfig(),

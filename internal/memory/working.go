@@ -153,3 +153,16 @@ func (wm *WorkingMemory) Clear(_ context.Context) error {
 	wm.entries = make([]MemoryEntry, 0, wm.maxSize)
 	return nil
 }
+
+// ContentSet 返回当前所有条目内容的集合，
+// 用于 CombinedMemory.Store 去重（已在工作记忆中的内容不重复落盘）。
+func (wm *WorkingMemory) ContentSet() map[string]bool {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+
+	set := make(map[string]bool, len(wm.entries))
+	for _, e := range wm.entries {
+		set[e.Content] = true
+	}
+	return set
+}

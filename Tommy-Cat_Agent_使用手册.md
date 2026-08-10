@@ -316,19 +316,30 @@ policies:
 ## 10. 记忆与 Persona
 
 - **工作记忆**：会话内多轮上下文，`/clear` 或 `POST /clear` 清空（同时清空该用户长期记忆）
-- **长期记忆**：对话内容经记忆存储后端持久化，会话重建后仍可检索；语义矛盾的旧条目自动标记失效（sqlite 后端），每用户上限 `memory.max_entries_per_user`（默认 500，超限按时间淘汰）
-- **记忆存储后端**（`memory.storage.type`）：`file`（默认，`data/memories/{userID}.jsonl`）/ `sqlite`（`data/memory.db`）/ `remote`（远程记忆服务，需先启动 `go run ./cmd/memstore serve`，配置 `url` 与 `token`）；用户画像随同后端存放（file 后端沿用 `data/users/{userID}/user.md`，路径不变）
+- **长期记忆**：对话内容经分层记忆存储持久化，会话重建后仍可检索；语义矛盾的旧条目自动标记失效（sqlite 层），每用户上限 `memory.max_entries_per_user`（默认 500，超限按时间淘汰）
+- **分层存储**：sqlite + file 两层恒启用，配置 `memory.storage.url` 时追加 remote 层；三层同时写入，读取按远端（全量）→ sqlite → file 回退：
+
+  | 层 | 配置了远端 | 未配置远端 |
+  |----|-----------|-----------|
+  | remote | 全量 | 不启用 |
+  | sqlite（`data/memory.db`） | 最近 7 天（`sqlite_retention` 可配，0=全量） | 全量 |
+  | file（`data/memories/{userID}.jsonl`） | 最近 3 天（`file_retention` 可配） | 最近 7 天 |
 
   ```yaml
   memory:
     storage:
-      type: sqlite            # file / sqlite / remote
-      path: data/memory.db    # sqlite 数据库路径（file 时为 JSONL 目录）
-      # url: http://mem.internal:9301   # remote 后端服务地址
-      # token: ${MEMSTORE_TOKEN}        # remote 鉴权令牌，支持 ${ENV}
+      # 配置远端即启用 remote 层（需先启动远程记忆服务，见 11.5）：
+      # url: http://mem.internal:9301
+      # token: ${MEMSTORE_TOKEN}        # 鉴权令牌，支持 ${ENV}
       # timeout: 3s
+      # sqlite_retention: 168h          # 未设置时按是否配远端取默认（168h/全量）
+      # file_retention: 72h             # 未设置时按是否配远端取默认（72h/168h）
+    prewarm_count: 10          # 会话创建时预热的历史条数
     max_entries_per_user: 500
   ```
+
+- **首次配置远端**：启动时自动把本地存量（含旧版遗留的 JSONL）按 ID 幂等同步到远端（画像一并），成功后按窗口清理本地；同步失败保留本地全量，下次启动重试
+- **会话预热**：会话创建时自动注入最近 `prewarm_count` 条历史进入上下文（带 `prewarm` 标记，不会被重复持久化），并加载用户画像
 
 - **Persona 三段式**：
   - `config/agent.md` — 职责与权限边界，**最高优先级**，用户指令不得覆盖
@@ -384,7 +395,7 @@ mcp:
 
 ### 11.5 远程记忆服务（memstore）
 
-多实例部署需要共享长期记忆与用户画像时，在中心机器部署独立的记忆存储服务，各 Agent 实例改用 `remote` 后端（配置见第 10 节）。
+多实例部署需要共享长期记忆与用户画像时，在中心机器部署独立的记忆存储服务，各 Agent 实例配置 `memory.storage.url` 即启用 remote 层（分层模式，见第 10 节）；首次配置时本地存量自动回迁远端。
 
 **1）启动服务**（落地后端可选 sqlite 或 file）：
 
@@ -399,12 +410,11 @@ export MEMSTORE_TOKEN=<强随机串>
 ```yaml
 memory:
   storage:
-    type: remote
     url: http://mem.internal:9301
     token: ${MEMSTORE_TOKEN}   # 支持 ${ENV} 引用；token 自动脱敏展示
 ```
 
-**3）验证**：`/doctor` 中 Memory storage 项应显示 `[OK] <url>`；错误令牌或地址不通时该项报错，Agent 记忆链路自动降级（写入失败仅警告，不阻塞任务）。
+**3）验证**：启动日志应打印 `记忆分层存储: remote(全量) + sqlite(7天) + file(3天)` 与回迁进度；`/doctor` 中 Memory storage 项应显示 `[OK] <url>`；错误令牌或地址不通时该项报错，远端写失败仅警告（本地层不受影响），读取自动回退本地层。
 
 **存量迁移**：将本地已生成的用户画像一次性导入目标后端：
 
