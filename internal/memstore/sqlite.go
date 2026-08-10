@@ -3,6 +3,7 @@ package memstore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,12 @@ CREATE TABLE IF NOT EXISTS profiles (
     user_id    TEXT PRIMARY KEY,
     content    TEXT NOT NULL,
     updated_at DATETIME NOT NULL
+);
+CREATE TABLE IF NOT EXISTS _meta (
+    user_id TEXT NOT NULL,
+    key     TEXT NOT NULL,
+    value   TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
 );
 `
 
@@ -119,6 +126,51 @@ func (s *SQLiteStore) markConflicts(ctx context.Context, entry memory.MemoryEntr
 		}
 	}
 	return rows.Err()
+}
+
+// PruneBefore 删除指定用户在 cutoff 之前创建的记忆。
+func (s *SQLiteStore) PruneBefore(ctx context.Context, userID string, cutoff time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM memories WHERE user_id = ? AND created_at < ?`, userID, cutoff)
+	return err
+}
+
+// ListUserIDs 返回存在记忆的所有用户 ID（用于启动修剪与远端同步）。
+func (s *SQLiteStore) ListUserIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT user_id FROM memories`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// GetMeta 读取每用户元数据（不存在返回空串）。
+func (s *SQLiteStore) GetMeta(ctx context.Context, userID, key string) (string, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM _meta WHERE user_id = ? AND key = ?`, userID, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+// SetMeta 写入每用户元数据（upsert）。
+func (s *SQLiteStore) SetMeta(ctx context.Context, userID, key, value string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO _meta (user_id, key, value) VALUES (?, ?, ?)
+		 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`,
+		userID, key, value)
+	return err
 }
 
 // evict 容量治理：超出上限时按时间从旧到新删除。

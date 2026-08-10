@@ -157,21 +157,24 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 - 启用时必填凭证缺失直接拒绝启动（不允许无认证端点）
 - 未配置 `channels` 时接入层不启动，行为与旧版完全一致
 
-### 3.9 记忆持久化（internal/memstore）
+### 3.9 记忆分层存储（internal/memstore）
 
 - `Store` 统一接口：长期记忆（保存/检索/最近/按用户清空）与用户画像（保存/读取）统一读写，多用户按 userID 隔离；`MemoryAdapter` 将其适配为单用户 `memory.Memory` 接口，作为 `CombinedMemory` 的长期记忆层接入引擎记忆链路
-- 三种可切换后端（`memory.storage.type`）：
+- **分层存储（TieredStore，Agent 实例默认模式）**：sqlite + file 两层恒启用，配置了 `memory.storage.url` 时追加 remote 层；三层同时写入，读取按 remote（全量）→ sqlite → file 回退：
 
-| 后端 | 落地位置 | 适用场景 |
-|------|----------|----------|
-| `file`（默认） | `data/memories/{userID}.jsonl` + 画像沿用 `data/users/{userID}/user.md` | 单机，与旧版路径完全兼容，零迁移 |
-| `sqlite` | `data/memory.db`（modernc.org/sqlite 纯 Go，无 CGO） | 单机要结构化查询 / 容量管理 / 冲突标记 |
-| `remote` | `cmd/memstore` 服务的落地后端（file 或 sqlite） | 多实例共享 / 集中备份 |
+| 层 | 配置了远端 | 未配置远端 |
+|----|-----------|-----------|
+| remote | 全量（永不修剪） | 不启用 |
+| sqlite（`data/memory.db`） | 最近 7 天（`sqlite_retention`，可配） | 全量 |
+| file（`data/memories` + 画像沿用 `data/users`） | 最近 3 天（`file_retention`，可配） | 最近 7 天 |
 
-- **remote 协议**：`/memstore/v1` REST（记忆保存/最近/检索/清空、画像读写、`healthz` 探活），业务端点要求 `Authorization: Bearer <token>`，`healthz` 免鉴权供 doctor 探活；客户端默认 3s 超时，写失败仅警告不阻塞主链路（与审计日志同策略）
-- **冲突消解接线**（P2 收尾）：sqlite 后端写入时用 `conflict.IsSemanticConflict` 与最近条目比对，语义矛盾的旧条目经 `conflict.ResolveConflict` 判定后标记 `superseded`，检索与最近列表自动排除；file/remote 后端暂不做
-- **容量治理**：每用户上限 `memory.max_entries_per_user`（默认 500），超限按时间从旧到新淘汰
-- **降级链**：存储后端初始化失败 → 纯内存运行并警告；画像读取后端未命中 → 回退本地文件
+- **首次远端回迁（backfill）**：新配置远端时，启动阶段把本地两层存量（sqlite ∪ file，含旧版遗留的 file-only 用户）按 ID 幂等写入远端（画像一并），全部成功后打 `remote_synced` 标记（sqlite `_meta` 表）并按窗口修剪本地；任一失败不打标、不修剪，下次启动重试。未同步用户的读取跳过远端
+- **会话预热**：会话创建时以 `RecentMemories(prewarm_count)`（默认 10）预热最近历史进入工作记忆（带 `prewarm` 标签参与上下文）；`CombinedMemory.Store` 按内容去重，预热回放与历史消息不重复落盘；会话创建时同步加载用户画像（store 优先，回退本地文件）
+- **remote 协议**：`/memstore/v1` REST（记忆保存/最近/检索/清空、画像读写、`healthz` 探活），业务端点要求 `Authorization: Bearer <token>`，`healthz` 免鉴权供 doctor 探活；客户端默认 3s 超时，远端写失败仅警告不阻塞本地层
+- **冲突消解接线**（P2 收尾）：sqlite 层写入时用 `conflict.IsSemanticConflict` 与最近条目比对，语义矛盾的旧条目经 `conflict.ResolveConflict` 判定后标记 `superseded`，检索与最近列表自动排除
+- **容量治理**：每用户上限 `memory.max_entries_per_user`（默认 500）超限淘汰；保留窗口按 `created_at` 在启动与每次写入时修剪（未回迁用户不修剪）
+- **降级链**：分层存储初始化失败 → 纯内存运行并警告；远端读取失败 → 回退本地层；画像读取后端未命中 → 回退本地文件
+- `cmd/memstore serve` 服务端仍为单后端落地（file/sqlite 二选一），`Open` 单后端工厂保留供服务端与旧配置使用
 
 ## 4. 关键数据流（HTTP chat 为例）
 
@@ -196,7 +199,7 @@ POST /api/v1/chat
 | `server` | HTTP 模式：地址、认证模式与密钥 |
 | `session` | per-user 限流 |
 | `persona` | agent.md / soul.md / 画像更新间隔 |
-| `memory` | 记忆存储后端（file/sqlite/remote、路径/url/token/timeout）与每用户容量上限 |
+| `memory` | 分层记忆存储（远端 url/token/timeout、各层保留窗口 sqlite_retention/file_retention）与预热条数、每用户容量上限 |
 | `databases` | db_query 数据源（表/列白名单、DSN） |
 | `db_query_cache` | db_query 结果缓存（默认启用，可关） |
 | `knowledge_bases` | 本地知识库（分块、BM25） |

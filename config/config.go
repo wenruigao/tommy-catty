@@ -88,6 +88,9 @@ type MemoryConfig struct {
 
 	// MaxEntriesPerUser 每用户长期记忆上限（默认 500，超限按时间淘汰最旧条目）
 	MaxEntriesPerUser int `yaml:"max_entries_per_user"`
+
+	// PrewarmCount 会话创建时预热的历史记忆条数（默认 10）
+	PrewarmCount int `yaml:"prewarm_count"`
 }
 
 // MemoryStorageConfig 记忆存储后端配置
@@ -107,6 +110,14 @@ type MemoryStorageConfig struct {
 
 	// Timeout remote 后端请求超时（如 "3s"，默认 3s）
 	Timeout string `yaml:"timeout"`
+
+	// SQLiteRetention sqlite 层保留窗口（如 "168h"，0=全量不修剪）；
+	// 未设置时：配置了远端默认 168h（7 天），未配置远端默认全量
+	SQLiteRetention string `yaml:"sqlite_retention"`
+
+	// FileRetention file 层保留窗口（如 "72h"，0=全量不修剪）；
+	// 未设置时：配置了远端默认 72h（3 天），未配置远端默认 168h（7 天）
+	FileRetention string `yaml:"file_retention"`
 }
 
 // DatabaseEntry 单个数据库数据源的 YAML 配置（对应 db_query 工具）。
@@ -553,6 +564,9 @@ func (c *Config) applyDefaults() {
 	if c.Memory.MaxEntriesPerUser == 0 {
 		c.Memory.MaxEntriesPerUser = 500
 	}
+	if c.Memory.PrewarmCount == 0 {
+		c.Memory.PrewarmCount = 10
+	}
 }
 
 // resolveEnvVars 解析配置中的 ${ENV_VAR} 引用
@@ -678,6 +692,34 @@ func (c *Config) MemoryTimeoutDuration() time.Duration {
 		return d
 	}
 	return 3 * time.Second
+}
+
+// MemorySQLiteRetention 解析 sqlite 层保留窗口（按 created_at 修剪）。
+// 未设置时：配置了远端（storage.url 非空）默认 168h（7 天），否则全量（0）。
+func (c *Config) MemorySQLiteRetention() time.Duration {
+	if c.Memory.Storage.SQLiteRetention != "" {
+		if d, err := time.ParseDuration(c.Memory.Storage.SQLiteRetention); err == nil {
+			return d // 0 或负值视为全量
+		}
+	}
+	if c.Memory.Storage.URL != "" {
+		return 168 * time.Hour
+	}
+	return 0
+}
+
+// MemoryFileRetention 解析 file 层保留窗口（按 created_at 修剪）。
+// 未设置时：配置了远端默认 72h（3 天），否则 168h（7 天）。
+func (c *Config) MemoryFileRetention() time.Duration {
+	if c.Memory.Storage.FileRetention != "" {
+		if d, err := time.ParseDuration(c.Memory.Storage.FileRetention); err == nil {
+			return d
+		}
+	}
+	if c.Memory.Storage.URL != "" {
+		return 72 * time.Hour
+	}
+	return 168 * time.Hour
 }
 
 // SessionTTLDuration 解析会话空闲超时配置，解析失败时返回 30 分钟。
