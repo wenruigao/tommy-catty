@@ -1,9 +1,12 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/tommy-cat/agent/internal/memstore"
 )
 
 // 兜底人格文本：入口启动时读取 agent.md / soul.md 失败时使用，
@@ -64,6 +67,17 @@ func BuildSystemPrompt(agentMD, basePrompt, soulMD, userMD string) string {
 // userProfilePath 返回指定用户的 user.md 路径。
 func userProfilePath(dir, userID string) string {
 	return filepath.Join(dir, userID, "user.md")
+}
+
+// loadUserProfileVia 优先从记忆存储后端读取画像（remote/sqlite 场景多实例共享），
+// 后端不可用或未命中时回退本地文件。
+func loadUserProfileVia(store memstore.Store, dir, userID string) string {
+	if store != nil {
+		if content, err := store.LoadProfile(context.Background(), userID); err == nil && content != "" {
+			return content
+		}
+	}
+	return loadUserProfile(dir, userID)
 }
 
 // loadUserProfile 读取用户画像文件，不存在时返回空字符串。

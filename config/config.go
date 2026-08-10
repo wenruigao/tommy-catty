@@ -61,6 +61,9 @@ type Config struct {
 	// Channels 通用 Channel 接入层配置（key 为渠道名，如 webhook）：
 	// 对齐 OpenClaw 的 Channel 机制，声明式接入外部消息平台；未配置时接入层不启动
 	Channels map[string]ChannelEntry `yaml:"channels"`
+
+	// Memory 长期记忆与用户画像持久化配置（memstore 后端抽象：file/sqlite/remote）
+	Memory MemoryConfig `yaml:"memory"`
 }
 
 // PersonaConfig Agent 人格体系配置
@@ -76,6 +79,34 @@ type PersonaConfig struct {
 
 	// ProfileUpdateIntervalRuns 每完成多少次任务更新一次用户画像（默认 3）
 	ProfileUpdateIntervalRuns int `yaml:"profile_update_interval_runs"`
+}
+
+// MemoryConfig 记忆持久化配置（长期记忆 + 用户画像统一经 memstore.Store 读写）
+type MemoryConfig struct {
+	// Storage 存储后端配置
+	Storage MemoryStorageConfig `yaml:"storage"`
+
+	// MaxEntriesPerUser 每用户长期记忆上限（默认 500，超限按时间淘汰最旧条目）
+	MaxEntriesPerUser int `yaml:"max_entries_per_user"`
+}
+
+// MemoryStorageConfig 记忆存储后端配置
+type MemoryStorageConfig struct {
+	// Type 后端类型：file（本地 JSONL，默认）/ sqlite（本地数据库）/ remote（远程记忆服务）
+	Type string `yaml:"type"`
+
+	// Path 存储路径：file 后端为 JSONL 根目录（默认 data/memories），
+	// sqlite 后端为数据库文件（默认 data/memory.db）
+	Path string `yaml:"path"`
+
+	// URL remote 后端服务地址（如 http://mem.internal:9301）
+	URL string `yaml:"url"`
+
+	// Token remote 后端鉴权令牌，支持 ${ENV_VAR} 引用
+	Token string `yaml:"token"`
+
+	// Timeout remote 后端请求超时（如 "3s"，默认 3s）
+	Timeout string `yaml:"timeout"`
 }
 
 // DatabaseEntry 单个数据库数据源的 YAML 配置（对应 db_query 工具）。
@@ -506,6 +537,22 @@ func (c *Config) applyDefaults() {
 	if c.Persona.ProfileUpdateIntervalRuns == 0 {
 		c.Persona.ProfileUpdateIntervalRuns = 3
 	}
+	if c.Memory.Storage.Type == "" {
+		c.Memory.Storage.Type = "file"
+	}
+	if c.Memory.Storage.Path == "" {
+		if c.Memory.Storage.Type == "sqlite" {
+			c.Memory.Storage.Path = "data/memory.db"
+		} else {
+			c.Memory.Storage.Path = "data/memories"
+		}
+	}
+	if c.Memory.Storage.Timeout == "" {
+		c.Memory.Storage.Timeout = "3s"
+	}
+	if c.Memory.MaxEntriesPerUser == 0 {
+		c.Memory.MaxEntriesPerUser = 500
+	}
 }
 
 // resolveEnvVars 解析配置中的 ${ENV_VAR} 引用
@@ -522,6 +569,7 @@ func (c *Config) resolveEnvVars() {
 	c.Search.TavilyAPIKey = resolveEnvVar(c.Search.TavilyAPIKey)
 	c.Server.AuthAPIKey = resolveEnvVar(c.Server.AuthAPIKey)
 	c.Server.AuthJWTSecret = resolveEnvVar(c.Server.AuthJWTSecret)
+	c.Memory.Storage.Token = resolveEnvVar(c.Memory.Storage.Token)
 	for name, ch := range c.Channels {
 		ch.Token = resolveEnvVar(ch.Token)
 		ch.CallbackURL = resolveEnvVar(ch.CallbackURL)
@@ -622,6 +670,14 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// MemoryTimeoutDuration 解析远程记忆后端请求超时，解析失败时返回 3 秒。
+func (c *Config) MemoryTimeoutDuration() time.Duration {
+	if d, err := time.ParseDuration(c.Memory.Storage.Timeout); err == nil && d > 0 {
+		return d
+	}
+	return 3 * time.Second
 }
 
 // SessionTTLDuration 解析会话空闲超时配置，解析失败时返回 30 分钟。

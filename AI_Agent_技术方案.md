@@ -124,7 +124,7 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 - `SessionManager`：per-user 会话、TTL 过期与上限回收
 - per-user 限流：token bucket（`session.requests_per_minute`，默认 30），用户间互不阻塞
 - Persona 三段式系统提示词：`agent.md`（权限边界，最高优先级，用户指令不可覆盖）+ `soul.md`（人格）+ `data/users/{userID}/user.md`（每用户画像，每 N 个任务由 LLM 自动总结更新）
-- 记忆：工作记忆已接入；长期记忆为 P2（`conflict.go` 冲突检测/消解模块为其预留，代码中已标注）
+- 记忆：工作记忆 + 长期记忆均已接入。长期记忆与用户画像经 `internal/memstore` 统一 Store 接口持久化，三种可切换后端：`file`（本地 JSONL，默认）/ `sqlite`（modernc.org/sqlite 纯 Go）/ `remote`（`cmd/memstore` 远程记忆服务，Bearer 鉴权）；`conflict.go` 冲突消解已在 sqlite 后端写入链路接线（语义矛盾的旧条目标记 superseded），每用户容量上限 `memory.max_entries_per_user`（默认 500）自动淘汰
 
 ### 3.6 Skill 系统（internal/skill）
 
@@ -205,18 +205,18 @@ POST /api/v1/chat
 - Channel 接入层与 7 平台 adapter + 通用 webhook
 - 观测面：trace、审计 JSONL、`GET /api/v1/usage`
 - CLI `/config` 运行时配置管理（overlay 覆盖层持久化 + 键白名单校验 + 脱敏与审计；schema/validate/patch/reset 与 `env:` 引用，参考 OpenClaw config 模块）
+- 记忆持久化（memstore）：长期记忆 + 用户画像统一 Store 抽象，file/sqlite/remote 三后端配置切换；`cmd/memstore` 提供远程记忆服务（serve）与存量画像迁移（migrate）；doctor 增加存储连通性检查
 
 ### P2 路线图（未实现，代码中已标注）
 
 | 项 | 说明 |
 |----|------|
 | 语义缓存 L2 | 向量相似层，依赖 embedding 模型 |
-| 长期记忆 | longTerm 记忆体 + conflict.go 冲突检测/消解接线 |
 | 进度流式推送 | 需 session 暴露中间步骤事件 |
 | 渠道状态端点 | GET /api/v1/channels 状态管理 |
 
 ## 8. 测试与工程
 
-- 全量 `go test ./...`（21 包）离线可跑；关键接线均有针对性单测（缓存键含工具、预算门禁、usage 端点、门控四条件、版本快照、db 缓存正确性约束等）
+- 全量 `go test ./...`（23 包）离线可跑；关键接线均有针对性单测（缓存键含工具、预算门禁、usage 端点、门控四条件、版本快照、db 缓存正确性约束等）
 - CI：gofmt / vet / test / 双平台编译
 - 平台：macOS / Linux（`internal/tool/limits_*.go` 未提供 Windows 实现）

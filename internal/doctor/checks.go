@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tommy-cat/agent/config"
+	"github.com/tommy-cat/agent/internal/memstore"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,6 +26,11 @@ type DoctorConfig struct {
 	SkillStorePath string                       // skills.json 路径
 	WorkDir        string                       // 工作目录
 	Providers      map[string]ProviderCheckInfo // LLM 供应商信息
+
+	// 记忆存储后端信息（memstore 连通性检查）
+	MemoryType string // file / sqlite / remote
+	MemoryPath string // file/sqlite 后端路径
+	MemoryURL  string // remote 后端地址
 }
 
 // ProviderCheckInfo 供应商检查信息
@@ -42,8 +48,50 @@ func RegisterAllChecks(d *Doctor, cfg DoctorConfig) {
 	d.AddCheck(checkToolAvailability())
 	d.AddCheck(checkSkillStore(cfg))
 	d.AddCheck(checkWorkDirectory(cfg))
+	d.AddCheck(checkMemoryStorage(cfg))
 	d.AddCheck(checkNetwork())
 	d.AddCheck(checkResources())
+}
+
+// checkMemoryStorage 检查记忆存储后端（remote 验证连通性，本地后端验证目录可写）
+func checkMemoryStorage(cfg DoctorConfig) Check {
+	return Check{
+		Name:       "Memory storage",
+		Category:   "memory",
+		Severity:   SeverityWarning,
+		Suggestion: "检查 memory.storage 配置（type/path/url），remote 后端需先启动 memstore 服务",
+		Run: func(ctx context.Context) (CheckStatus, string) {
+			switch cfg.MemoryType {
+			case "remote":
+				if cfg.MemoryURL == "" {
+					return StatusError, "remote 后端未配置 memory.storage.url"
+				}
+				store := memstore.NewRemoteStore(cfg.MemoryURL, "", 3*time.Second)
+				if err := store.HealthCheck(ctx); err != nil {
+					return StatusError, fmt.Sprintf("远程记忆服务不可达: %v", err)
+				}
+				return StatusOK, cfg.MemoryURL
+			case "sqlite":
+				path := cfg.MemoryPath
+				if path == "" {
+					path = "data/memory.db"
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					return StatusError, fmt.Sprintf("数据库目录不可创建: %v", err)
+				}
+				return StatusOK, path
+			default: // file
+				dir := cfg.MemoryPath
+				if dir == "" {
+					dir = "data/memories"
+				}
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return StatusError, fmt.Sprintf("记忆目录不可创建: %v", err)
+				}
+				return StatusOK, dir
+			}
+		},
+	}
 }
 
 // checkConfigFile 检查配置文件完整性

@@ -48,3 +48,7 @@ config.local.yaml
 # 本地运行产物（审计日志、IDE 工具配置）
 data/audit.jsonl
 .qwen/
+
+# 记忆持久化运行产物（memstore file/sqlite 后端）
+data/memories/
+data/memory.db

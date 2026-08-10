@@ -13,7 +13,8 @@
 - **Token 计量与预算** — 分层分模型计量、日预算门禁与 80% 预警，用量经 API 暴露
 - **语义缓存** — L1 精确哈希层（缓存键含工具列表），重复请求免 LLM 调用
 - **多供应商故障转移** — 指数退避重试 + 熔断器 + 自动切换备用模型
-- **健康自检（Doctor）** — 内置 8 项环境检查，支持自动修复常见问题
+- **记忆持久化** — 长期记忆与用户画像经统一存储抽象落盘，file / sqlite / remote（远程记忆服务）三后端可切换
+- **健康自检（Doctor）** — 内置 9 项环境检查，支持自动修复常见问题
 
 ## 项目结构
 
@@ -21,7 +22,8 @@
 tommy-catty/
 ├── cmd/
 │   ├── agent/main.go            # CLI 入口（交互式 REPL）
-│   └── server/main.go           # HTTP 服务入口（多用户 + Channel 接入层）
+│   ├── server/main.go           # HTTP 服务入口（多用户 + Channel 接入层）
+│   └── memstore/main.go         # 记忆存储服务（remote 后端）与迁移工具
 ├── config/
 │   ├── config.go                # 配置加载与解析
 │   ├── config.yaml              # 主配置文件
@@ -33,7 +35,8 @@ tommy-catty/
 │   ├── tool/                    # 工具注册表与内置工具（含 db_query、kb）
 │   ├── security/                # 安全策略引擎（五检查点）+ 审计日志
 │   ├── session/                 # 会话管理、per-user 限流、Persona 组装
-│   ├── memory/                  # 记忆系统（长期记忆 P2）
+│   ├── memory/                  # 记忆系统（工作记忆 + 冲突消解）
+│   ├── memstore/                # 记忆持久化（file/sqlite/remote 后端 + REST 服务）
 │   ├── skill/                   # Skill 生成/匹配、生成门控、版本管理
 │   ├── channel/                 # Channel 接入层 Hub 与 8 种渠道 adapter
 │   ├── ctxmgr/                  # 上下文压缩
@@ -43,7 +46,7 @@ tommy-catty/
 │   ├── trace/                   # 执行追踪
 │   ├── doctor/                  # 健康自检
 │   └── bootstrap/               # 组件装配
-├── data/                        # Skill、审计日志、用户画像持久化
+├── data/                        # Skill、审计日志、用户画像与长期记忆持久化
 ├── go.mod
 └── go.sum
 ```
@@ -64,6 +67,7 @@ export GOPROXY=https://goproxy.cn,direct
 go mod tidy
 go build -o bin/tommy-agent ./cmd/agent     # CLI
 go build -o bin/tommy-server ./cmd/server   # HTTP / 渠道
+go build -o bin/tommy-memstore ./cmd/memstore  # 记忆存储服务（remote 后端，可选）
 ```
 
 ### 配置 API Key
