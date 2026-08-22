@@ -147,6 +147,18 @@ func main() {
 	llmAdp := &llmAdapter{gateway: gateway}
 	summarizer := ctxmgr.NewLLMSummarizer(llmAdp.Chat)
 
+	// 注册多 Agent 协作工具（delegate_task），未启用时跳过
+	// HTTP 模式下使用共享门禁（per-user 身份不可用，但策略评估与限流仍生效）
+	if cfg.MultiAgent.Enabled {
+		sharedGate := session.NewToolGateAdapter(secEngine, httpApprover)
+		sharedGate.SetRiskLookup(riskLookup)
+		if maRoles, maErr := bootstrap.RegisterMultiAgentTools(cfg, registry, llmAdp, sharedGate, nil); maErr != nil {
+			fmt.Printf("  ⚠️  多 Agent 注册失败: %v\n", maErr)
+		} else if len(maRoles) > 0 {
+			fmt.Printf("  🤖 多 Agent 协作: 已注册 %d 个角色\n", len(maRoles))
+		}
+	}
+
 	// 加载 Agent 人格文件（缺失时使用内置兜底文本并警告）
 	agentMD, err := session.LoadPersonaFile(cfg.Persona.AgentMDPath, session.DefaultAgentMD)
 	if err != nil {

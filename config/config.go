@@ -64,6 +64,9 @@ type Config struct {
 
 	// Memory 长期记忆与用户画像持久化配置（memstore 后端抽象：file/sqlite/remote）
 	Memory MemoryConfig `yaml:"memory"`
+
+	// MultiAgent 多 Agent 协作配置（Orchestrator-Worker 模式，默认禁用）
+	MultiAgent MultiAgentConfig `yaml:"multi_agent"`
 }
 
 // PersonaConfig Agent 人格体系配置
@@ -425,6 +428,46 @@ type SessionConfig struct {
 	RequestsPerMinute int `yaml:"requests_per_minute"`
 }
 
+// MultiAgentConfig 多 Agent 协作配置（Orchestrator-Worker 模式）。
+type MultiAgentConfig struct {
+	// Enabled 是否启用多 Agent 协作（默认 false）
+	Enabled bool `yaml:"enabled"`
+
+	// Orchestrator 编排器配置
+	Orchestrator OrchestratorEntry `yaml:"orchestrator"`
+
+	// Roles Agent 角色定义（key 为角色名）
+	Roles map[string]MultiAgentRoleEntry `yaml:"roles"`
+}
+
+// OrchestratorEntry 编排器的 YAML 配置。
+type OrchestratorEntry struct {
+	// MaxWorkers 最大并发 Worker 数（默认 5）
+	MaxWorkers int `yaml:"max_workers"`
+	// MaxSubTasks 单次分解最大子任务数（默认 10）
+	MaxSubTasks int `yaml:"max_subtasks"`
+	// WorkerTimeout 单 Worker 执行超时（如 "120s"，默认 120s）
+	WorkerTimeout string `yaml:"worker_timeout"`
+	// SummaryMaxTokens 汇总阶段最大 token（默认 4096）
+	SummaryMaxTokens int `yaml:"summary_max_tokens"`
+}
+
+// MultiAgentRoleEntry 单个 Agent 角色的 YAML 配置。
+type MultiAgentRoleEntry struct {
+	// Description 角色能力描述
+	Description string `yaml:"description"`
+	// SystemPrompt 角色专属系统提示词
+	SystemPrompt string `yaml:"system_prompt"`
+	// Tools 可用工具白名单
+	Tools []string `yaml:"tools"`
+	// Model 可选，指定使用的 LLM 供应商（空则继承主 Agent）
+	Model string `yaml:"model"`
+	// MaxIterations Worker 的最大 ReAct 迭代次数（默认 15）
+	MaxIterations int `yaml:"max_iterations"`
+	// MaxConcurrent 该角色最大并发实例数（默认 3）
+	MaxConcurrent int `yaml:"max_concurrent"`
+}
+
 // Load 从 YAML 文件加载配置
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -736,4 +779,14 @@ func (c *Config) SessionCleanupDuration() time.Duration {
 		return d
 	}
 	return 5 * time.Minute
+}
+
+// MultiAgentWorkerTimeout 解析 Worker 执行超时，解析失败时返回 120 秒。
+func (c *Config) MultiAgentWorkerTimeout() time.Duration {
+	if c.MultiAgent.Orchestrator.WorkerTimeout != "" {
+		if d, err := time.ParseDuration(c.MultiAgent.Orchestrator.WorkerTimeout); err == nil {
+			return d
+		}
+	}
+	return 120 * time.Second
 }

@@ -34,6 +34,7 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 ┌───────────────▼──────────── 引擎层 ────────────────────────────┐
 │  ReAct Engine（思考→行动→观察循环，max_iterations 保护）        │
 │  上下文压缩 (ctxmgr)   反思与重规划   Skill 匹配/生成门控       │
+│  多 Agent 编排（Orchestrator-Worker，delegate_task 工具）       │
 └───────┬───────────────────────┬────────────────────────────────┘
         │                       │
 ┌───────▼────── 工具层 ──────┐ ┌▼────────── 模型层 ──────────────┐
@@ -94,6 +95,7 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 | `db_query` | 数据库只读查询（SQL 白名单校验 + 连接池 + 结果缓存） | L1 |
 | `kb_search` / `kb_read` / `kb_list` | 本地知识库检索（BM25 倒排索引） | L0 |
 | MCP 远程工具 | 经 Model Context Protocol 从外部 server 动态发现注册 | 可配 |
+| `delegate_task` | 多 Agent 协作：将任务委派给 Orchestrator 分解并分配给 Worker 执行 | L0 |
 
 **db_query 结果缓存（17.11，已接线）**：缺省启用（200 条 / 5min TTL），按数据源+规范化 SQL 命中；正确性约束：`max_rows` 覆盖请求不缓存、截断结果不缓存。`db_query_cache` 配置节可关闭。
 
@@ -176,6 +178,53 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 - **降级链**：分层存储初始化失败 → 纯内存运行并警告；远端读取失败 → 回退本地层；画像读取后端未命中 → 回退本地文件
 - `cmd/memstore serve` 服务端仍为单后端落地（file/sqlite 二选一），`Open` 单后端工厂保留供服务端与旧配置使用
 
+### 3.10 多 Agent 协作（internal/multiagent）
+
+**Orchestrator-Worker 模式**：主 Agent 通过 `delegate_task` 工具将复杂任务委派给编排器，编排器用 LLM 将任务分解为子任务，分配给拥有不同角色和工具子集的 Worker Agent 执行，最终汇总结果。
+
+**核心组件**：
+
+| 组件 | 职责 |
+|------|------|
+| `RoleDef` | 角色定义：名称、描述、系统提示词、工具白名单、可选模型/迭代次数 |
+| `Orchestrator` | 编排器：LLM 任务分解 → 拓扑排序调度 → 并发 Worker 执行 → LLM 结果汇总 |
+| `Worker` | 轻量 Agent 实例：从全局 Registry 提取工具子集，创建独立 Engine 执行子任务 |
+| `Blackboard` | 共享结果板：Worker 执行结果写入，下游 Worker 通过依赖查询获取上游结果 |
+| `DelegateTaskTool` | `delegate_task` 工具实现，供主 Agent 调用 Orchestrator |
+
+**执行流程**：
+1. 主 Agent 调用 `delegate_task(goal)` → Orchestrator 接收目标
+2. Orchestrator 用 LLM 分解为 `Plan`（含 `SubTask` 列表 + 依赖关系 + 编排策略）
+3. 拓扑排序确定执行顺序，无依赖任务并行执行（信号量控制最大并发 `max_workers`）
+4. 每个 Worker 从全局工具注册表提取角色白名单内的工具子集，创建独立 Engine 执行 ReAct 循环
+5. Worker 结果写入 Blackboard；有依赖的 Worker 等待上游完成后获取上下文
+6. 全部 Worker 完成后，Orchestrator 用 LLM 汇总所有结果为最终答案
+
+**安全设计**：
+- Worker 只能使用角色白名单内的工具（最小权限原则），无法调用 `delegate_task`（禁止嵌套委派）
+- Worker 继承主会话的 `ToolGate`，安全策略不降级
+- 每个 Worker 有独立超时（`worker_timeout`，默认 120s）
+- 计划解析校验：角色引用合法性、依赖无环检测（Kahn 算法）、重复 ID 检测
+
+**角色声明式配置**（YAML，无需改代码）：
+```yaml
+multi_agent:
+  enabled: true
+  orchestrator:
+    max_workers: 5
+    max_subtasks: 10
+    worker_timeout: "120s"
+  roles:
+    researcher:
+      description: "网络搜索与信息收集专家"
+      system_prompt: "你是一名专业的信息研究员..."
+      tools: ["web_search", "web_fetch", "kb_search", "kb_read"]
+    coder:
+      description: "编程与代码执行专家"
+      system_prompt: "你是一名资深软件工程师..."
+      tools: ["shell_exec", "code_run", "file_read", "file_write"]
+```
+
 ## 4. 关键数据流（HTTP chat 为例）
 
 ```
@@ -185,7 +234,10 @@ POST /api/v1/chat
   → Persona 组装系统提示词 → Skill 匹配（命中则注入 PromptHints）
   → ReAct 循环：LLM Gateway（缓存→供应商→重试/熔断/降级）
       ├─ 工具调用：tool_call 策略评估 → 执行 → tool_return 清洗
-      └─ 上下文超限时自动压缩
+      ├─ 上下文超限时自动压缩
+      └─ delegate_task 调用 → Orchestrator 分解任务
+          ├─ Worker 并行/串行执行（各自独立 Engine + 工具子集）
+          └─ 结果汇总 → 返回主 Agent 继续 ReAct 循环
   → llm_output 脱敏/拦截 → 写会话记忆 → 用户画像按需更新
   → task_end 成本评估 → 响应 + Token 计量入账
 ```
@@ -206,6 +258,7 @@ POST /api/v1/chat
 | `search` | 搜索引擎（duckduckgo / tavily） |
 | `mcp.servers` | MCP 远程工具（stdio / sse） |
 | `channels` | 渠道接入层（8 种渠道声明式配置） |
+| `multi_agent` | 多 Agent 协作：编排器参数 + 角色定义（角色名/描述/提示词/工具白名单），默认禁用 |
 | `policy_file` / `audit_log_path` / `skill_store_path` / `work_dir` | 安全与持久化路径 |
 
 **覆盖层（overlay）**：与主配置同目录的 `config.local.yaml` 作为本地覆盖层，加载优先级 内置默认 < `config.yaml` < `config.local.yaml`。CLI `/config` 命令族（set/unset/patch/reset/schema/validate，参考 OpenClaw config 模块设计）仅读写覆盖层（白名单键、类型校验、密钥脱敏、`env:NAME` 环境变量引用、补丁原子写入），主配置文件永不改动；HTTP 与 CLI 共用同一加载入口 `config.LoadWithOverlay`。
@@ -227,6 +280,7 @@ POST /api/v1/chat
 - 观测面：trace、审计 JSONL、`GET /api/v1/usage`
 - CLI `/config` 运行时配置管理（overlay 覆盖层持久化 + 键白名单校验 + 脱敏与审计；schema/validate/patch/reset 与 `env:` 引用，参考 OpenClaw config 模块）
 - 记忆持久化（memstore）：长期记忆 + 用户画像统一 Store 抽象，file/sqlite/remote 三后端配置切换；`cmd/memstore` 提供远程记忆服务（serve）与存量画像迁移（migrate）；doctor 增加存储连通性检查
+- 多 Agent 协作（multiagent）：Orchestrator-Worker 模式，`delegate_task` 工具供主 Agent 委派复杂任务；角色 YAML 声明式定义（工具白名单 + 独立提示词），拓扑排序调度 + 并发执行 + Blackboard 结果共享；Worker 最小权限 + 安全门禁继承 + 无环检测
 
 ### P2 路线图（未实现，代码中已标注）
 

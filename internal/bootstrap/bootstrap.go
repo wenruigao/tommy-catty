@@ -9,11 +9,14 @@ import (
 	"time"
 
 	"github.com/tommy-cat/agent/config"
+	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/kb"
 	"github.com/tommy-cat/agent/internal/mcp"
+	"github.com/tommy-cat/agent/internal/multiagent"
 	"github.com/tommy-cat/agent/internal/tool"
 	"github.com/tommy-cat/agent/internal/tool/dbquery"
 	"github.com/tommy-cat/agent/internal/tool/kbtools"
+	"github.com/tommy-cat/agent/internal/trace"
 )
 
 // Result 汇总 bootstrap 过程构建的资源，便于调用方做清理。
@@ -196,4 +199,61 @@ func toMCPClientConfig(e config.MCPServerEntry) mcp.ClientConfig {
 		cfg.Timeout = time.Duration(e.TimeoutSeconds) * time.Second
 	}
 	return cfg
+}
+
+// RegisterMultiAgentTools 根据配置构建多 Agent 协作编排器，并注册 delegate_task 工具。
+// 未启用（multi_agent.enabled=false）或角色为空时直接跳过。
+// llmClient 为编排器使用的 LLM 客户端（通常与主 Engine 共享同一网关适配器）；
+// toolGate 为安全门禁（Worker 继承，保证安全策略不降级）；
+// tracer 为追踪器（可为 nil）。
+func RegisterMultiAgentTools(
+	cfg *config.Config,
+	registry *tool.Registry,
+	llmClient engine.LLMClient,
+	toolGate engine.ToolGate,
+	tracer *trace.Tracer,
+) ([]string, error) {
+	if !cfg.MultiAgent.Enabled {
+		return nil, nil
+	}
+	if len(cfg.MultiAgent.Roles) == 0 {
+		return []string{"多 Agent 已启用但未定义角色，跳过"}, nil
+	}
+
+	// 构建角色注册表
+	roles := make(map[string]*multiagent.RoleDef, len(cfg.MultiAgent.Roles))
+	for name, entry := range cfg.MultiAgent.Roles {
+		roles[name] = &multiagent.RoleDef{
+			Name:          name,
+			Description:   entry.Description,
+			SystemPrompt:  entry.SystemPrompt,
+			Tools:         entry.Tools,
+			Model:         entry.Model,
+			MaxIterations: entry.MaxIterations,
+			MaxConcurrent: entry.MaxConcurrent,
+		}
+	}
+
+	// 校验角色定义
+	if err := multiagent.ValidateRoles(roles); err != nil {
+		return nil, fmt.Errorf("多 Agent 角色配置校验失败: %w", err)
+	}
+
+	// 构建编排器配置
+	orchCfg := multiagent.OrchestratorConfig{
+		MaxWorkers:       cfg.MultiAgent.Orchestrator.MaxWorkers,
+		MaxSubTasks:      cfg.MultiAgent.Orchestrator.MaxSubTasks,
+		WorkerTimeout:    cfg.MultiAgentWorkerTimeout(),
+		SummaryMaxTokens: cfg.MultiAgent.Orchestrator.SummaryMaxTokens,
+	}
+
+	// 创建编排器并注册 delegate_task 工具
+	orch := multiagent.NewOrchestrator(llmClient, roles, registry, orchCfg, toolGate, tracer)
+	registry.Register(multiagent.NewDelegateTaskTool(orch), tool.RiskReadOnly, 300*time.Second)
+
+	roleNames := make([]string, 0, len(roles))
+	for name := range roles {
+		roleNames = append(roleNames, name)
+	}
+	return roleNames, nil
 }

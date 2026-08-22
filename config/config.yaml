@@ -323,3 +323,55 @@ work_dir: "."
 #     app_id: "${QQ_APP_ID}"                    # 必填，开放平台 AppID
 #     app_secret: "${QQ_APP_SECRET}"            # 必填，兼派生 ed25519 签名密钥
 #     # 管理端回调地址填 /channels/qq，勾选 C2C/群 @ 消息事件
+
+# ────────────────────────────────────────────────────────────
+# 多 Agent 协作（Orchestrator-Worker 模式）
+# ────────────────────────────────────────────────────────────
+# 启用后注册 delegate_task 工具，主 Agent 可将复杂任务分解并委派给多个
+# 专职 Worker Agent 协作执行。每个角色拥有独立的系统提示词和工具白名单。
+# 未配置或 enabled: false 时行为与旧版完全一致。
+#
+# multi_agent:
+#   enabled: false
+#
+#   orchestrator:
+#     max_workers: 5                # 最大并发 Worker 数
+#     max_subtasks: 10              # 单次分解最大子任务数
+#     worker_timeout: "120s"        # 单 Worker 执行超时
+#     summary_max_tokens: 4096      # 汇总阶段最大 token
+#
+#   roles:
+#     researcher:
+#       description: "网络搜索与信息收集专家，擅长从多个来源获取、对比和整理信息"
+#       system_prompt: |
+#         你是一名专业的信息研究员。你的任务是从网络搜索和网页中提取关键信息，
+#         整理成结构化的研究报告。
+#         规则：
+#         - 优先使用多个来源交叉验证信息
+#         - 输出必须包含信息来源
+#         - 如果信息不足，明确指出哪些方面需要补充
+#       tools: ["web_search", "web_fetch", "kb_search", "kb_read"]
+#       max_iterations: 15
+#
+#     coder:
+#       description: "编程与代码执行专家，擅长编写和调试代码、执行 shell 命令"
+#       system_prompt: |
+#         你是一名资深软件工程师。你的任务是根据需求编写代码、执行命令、调试问题。
+#         规则：
+#         - 代码必须包含必要的错误处理
+#         - 执行命令前说明命令的作用
+#         - 输出结果要包含关键数据摘要
+#       tools: ["shell_exec", "code_run", "file_read", "file_write"]
+#       max_iterations: 20
+#
+#     writer:
+#       description: "文档撰写与内容创作专家，擅长将信息整理为结构清晰的文档"
+#       system_prompt: |
+#         你是一名专业的技术文档撰写者。你的任务是将收集到的信息和代码结果
+#         整理为结构清晰、表达准确的文档。
+#         规则：
+#         - 文档结构清晰，使用标题、列表、表格等格式化手段
+#         - 语言简洁准确
+#         - 保留关键数据和引用来源
+#       tools: ["file_read", "file_write"]
+#       max_iterations: 10

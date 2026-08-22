@@ -128,6 +128,13 @@ func main() {
 
 	llmAdapter := &llmClientAdapter{gateway: gateway}
 
+	// 注册多 Agent 协作工具（delegate_task），未启用时跳过
+	if maRoles, maErr := bootstrap.RegisterMultiAgentTools(cfg, registry, llmAdapter, toolGate, tracer); maErr != nil {
+		fmt.Printf("  ⚠️  多 Agent 注册失败: %v\n", maErr)
+	} else if len(maRoles) > 0 {
+		fmt.Printf("  🤖 多 Agent 协作: 已注册 %d 个角色 (%s)\n", len(maRoles), strings.Join(maRoles, ", "))
+	}
+
 	// 初始化摘要生成器（用于上下文压缩）
 	summarizer := ctxmgr.NewLLMSummarizer(llmAdapter.Chat)
 
