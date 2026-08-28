@@ -55,7 +55,7 @@ tommy-catty/
 
 ### 环境要求
 
-- Go 1.25+
+- Go 1.26+
 - 网络可访问 LLM API 端点
 
 ### 编译构建
@@ -230,7 +230,7 @@ policies:
 
 ## 技术栈
 
-- **语言**: Go 1.25
+- **语言**: Go 1.26
 - **依赖**: google/uuid, gopkg.in/yaml.v3 等（HTTP 用标准库）
 - **架构**: 模块化 internal 包，接口驱动设计
 - **协议**: OpenAI Chat Completions API（SSE 流式）+ Anthropic Messages API

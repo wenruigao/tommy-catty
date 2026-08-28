@@ -11,30 +11,30 @@ import (
 
 // LLM 网关指标
 const (
-	MetricLLMCalls             = "tommy_llm_calls_total"
-	MetricLLMRetries           = "tommy_llm_retries_total"
-	MetricLLMCircuitState      = "tommy_llm_circuit_breaker_state"
-	MetricLLMCacheHits         = "tommy_llm_cache_hits_total"
-	MetricLLMCacheMisses       = "tommy_llm_cache_misses_total"
-	MetricLLMCacheSize         = "tommy_llm_cache_size"
-	MetricLLMTokens            = "tommy_llm_tokens_total"
-	MetricLLMTokensCached      = "tommy_llm_tokens_cached_total"
-	MetricLLMRequestDuration   = "tommy_llm_request_duration_seconds"
-	MetricLLMBudgetUsed        = "tommy_llm_budget_used_tokens"
-	MetricLLMBudgetLimit       = "tommy_llm_budget_limit_tokens"
+	MetricLLMCalls           = "tommy_llm_calls_total"
+	MetricLLMRetries         = "tommy_llm_retries_total"
+	MetricLLMCircuitState    = "tommy_llm_circuit_breaker_state"
+	MetricLLMCacheHits       = "tommy_llm_cache_hits_total"
+	MetricLLMCacheMisses     = "tommy_llm_cache_misses_total"
+	MetricLLMCacheSize       = "tommy_llm_cache_size"
+	MetricLLMTokens          = "tommy_llm_tokens_total"
+	MetricLLMTokensCached    = "tommy_llm_tokens_cached_total"
+	MetricLLMRequestDuration = "tommy_llm_request_duration_seconds"
+	MetricLLMBudgetUsed      = "tommy_llm_budget_used_tokens"
+	MetricLLMBudgetLimit     = "tommy_llm_budget_limit_tokens"
 )
 
 // 会话层指标
 const (
-	MetricSessionActive       = "tommy_session_active"
-	MetricSessionCreated      = "tommy_session_created_total"
-	MetricSessionRateLimited  = "tommy_session_rate_limited_total"
+	MetricSessionActive      = "tommy_session_active"
+	MetricSessionCreated     = "tommy_session_created_total"
+	MetricSessionRateLimited = "tommy_session_rate_limited_total"
 )
 
 // 工具层指标
 const (
-	MetricToolCalls       = "tommy_tool_calls_total"
-	MetricToolDuration    = "tommy_tool_duration_seconds"
+	MetricToolCalls    = "tommy_tool_calls_total"
+	MetricToolDuration = "tommy_tool_duration_seconds"
 )
 
 // 安全层指标
@@ -44,20 +44,20 @@ const (
 
 // Channel 层指标
 const (
-	MetricChannelMessages  = "tommy_channel_messages_total"
-	MetricChannelDelivery  = "tommy_channel_delivery_total"
+	MetricChannelMessages = "tommy_channel_messages_total"
+	MetricChannelDelivery = "tommy_channel_delivery_total"
 )
 
 // 多 Agent 层指标
 const (
-	MetricAgentDelegations        = "tommy_agent_delegations_total"
-	MetricAgentWorkers            = "tommy_agent_workers_total"
-	MetricAgentWorkerDuration     = "tommy_agent_worker_duration_seconds"
+	MetricAgentDelegations    = "tommy_agent_delegations_total"
+	MetricAgentWorkers        = "tommy_agent_workers_total"
+	MetricAgentWorkerDuration = "tommy_agent_worker_duration_seconds"
 )
 
 // 运行时指标
 const (
-	MetricRuntimeMemory    = "tommy_runtime_memory_bytes"
+	MetricRuntimeMemory     = "tommy_runtime_memory_bytes"
 	MetricRuntimeGoroutines = "tommy_runtime_goroutines"
 )
 
@@ -73,7 +73,7 @@ const (
 // ─────────────────────────────────────────────────────────────
 
 var (
-	once     sync.Once
+	once       sync.Once
 	registered bool
 
 	// LLM 网关
@@ -92,8 +92,8 @@ var (
 	sessionRateLimited *Counter
 
 	// 工具层
-	toolCalls       *CounterVec
-	toolDuration    *CounterVec
+	toolCalls    *CounterVec
+	toolDuration *CounterVec
 
 	// 安全层
 	securityEvents *CounterVec
@@ -108,7 +108,7 @@ var (
 	agentWorkerDuration *CounterVec
 
 	// 运行时
-	runtimeMemory    *Gauge
+	runtimeMemory     *Gauge
 	runtimeGoroutines *Gauge
 
 	// 数据库查询缓存

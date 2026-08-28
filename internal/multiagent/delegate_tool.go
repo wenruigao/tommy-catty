@@ -67,8 +67,8 @@ func (t *DelegateTaskTool) Execute(ctx context.Context, args map[string]interfac
 	return tool.Result{
 		Output: output + "\n\n---\n" + summary,
 		Metadata: map[string]interface{}{
-			"total_tokens": result.TotalTokens,
-			"duration_ms":  result.Duration.Milliseconds(),
+			"total_tokens":  result.TotalTokens,
+			"duration_ms":   result.Duration.Milliseconds(),
 			"subtask_count": len(result.Plan.SubTasks),
 		},
 	}, nil

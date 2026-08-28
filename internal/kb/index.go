@@ -31,7 +31,7 @@ type Index struct {
 	posting map[string][]posting   // term -> postings
 
 	// chunk 长度（token 数），用于 BM25 归一化
-	chunkLen   map[chunkKey]int
+	chunkLen    map[chunkKey]int
 	avgChunkLen float64
 	totalChunks int
 	nextDocID   int

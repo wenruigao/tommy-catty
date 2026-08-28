@@ -148,8 +148,8 @@ func (kb *KnowledgeBase) Search(query string, topK int) []SearchHit {
 
 // Stats 返回知识库统计信息。
 type Stats struct {
-	Name        string
-	DocCount    int
-	ChunkCount  int
-	BuiltAt     time.Time
+	Name       string
+	DocCount   int
+	ChunkCount int
+	BuiltAt    time.Time
 }

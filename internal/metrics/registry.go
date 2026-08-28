@@ -91,7 +91,7 @@ func labelsKey(labels map[string]string) string {
 
 // CounterVec 带 label 维度的 Counter 集合。
 type CounterVec struct {
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	counters map[string]*Counter
 	labels   map[string]map[string]string // key → labels
 }
@@ -216,7 +216,7 @@ type Registry struct {
 
 type counterEntry struct {
 	meta   metricMeta
-	scalar *Counter   // 无 label 时使用
+	scalar *Counter    // 无 label 时使用
 	vec    *CounterVec // 有 label 时使用
 }
 

@@ -39,9 +39,9 @@ func (m *mockLLMClient) Chat(_ context.Context, messages []llm.Message, _ []llm.
 // dummyTool 用于测试的简单工具实现。
 type dummyTool struct{ name string }
 
-func (d *dummyTool) Name() string                                        { return d.name }
-func (d *dummyTool) Description() string                                 { return "测试工具 " + d.name }
-func (d *dummyTool) Parameters() tool.JSONSchema                         { return tool.JSONSchema{Type: "object"} }
+func (d *dummyTool) Name() string                { return d.name }
+func (d *dummyTool) Description() string         { return "测试工具 " + d.name }
+func (d *dummyTool) Parameters() tool.JSONSchema { return tool.JSONSchema{Type: "object"} }
 func (d *dummyTool) Execute(_ context.Context, _ map[string]interface{}) (tool.Result, error) {
 	return tool.Result{Output: "ok"}, nil
 }

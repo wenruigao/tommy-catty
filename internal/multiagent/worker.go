@@ -15,12 +15,12 @@ import (
 // Worker 是一个受限的 Agent 实例，拥有特定角色和工具子集。
 // 内部复用 engine.Engine 驱动 ReAct 循环。
 type Worker struct {
-	role   *RoleDef
-	id     string // 实例标识（用于追踪）
-	llm    engine.LLMClient
-	tools  engine.ToolCaller // 受限工具子集
+	role     *RoleDef
+	id       string // 实例标识（用于追踪）
+	llm      engine.LLMClient
+	tools    engine.ToolCaller // 受限工具子集
 	toolGate engine.ToolGate   // 继承主会话的安全门禁
-	tracer *trace.Tracer
+	tracer   *trace.Tracer
 }
 
 // NewWorker 创建一个 Worker 实例。
