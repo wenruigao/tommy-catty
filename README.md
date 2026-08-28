@@ -1,8 +1,22 @@
-# Tommy-Cat Agent
+# 🐱 Tommy-Cat Agent
 
-通用任务智能体 — 基于 Go 语言开发的 AI Agent，采用 ReAct（Reasoning + Acting）执行循环，支持多模型接入、工具调用、安全策略、Skill 自动生成与多渠道接入。
+> **通用任务智能体** — 基于 Go 语言开发的 AI Agent，采用 ReAct（Reasoning + Acting）执行循环，支持多模型接入、工具调用、安全策略、Skill 自动生成与多渠道接入。
 
-## 核心特性
+<p align="center">
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" />
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-green" />
+  <img alt="Platform" src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey" />
+  <img alt="CI" src="https://github.com/wenruigao/tommy-catty/actions/workflows/ci.yml/badge.svg" />
+  <img alt="Go Report Card" src="https://goreportcard.com/badge/github.com/wenruigao/tommy-catty" />
+</p>
+
+<p align="center">
+  <b>Go 实现 · 零框架依赖（HTTP 用标准库）· ReAct 引擎 · Policy-as-Code 安全 · 8 渠道接入</b>
+</p>
+
+---
+
+## ✨ 核心特性
 
 - **配置驱动的模型接入** — 任何兼容 OpenAI Chat Completions API 的服务（及 Anthropic Messages API）均可通过 YAML 配置接入，无需修改代码
 - **ReAct 执行引擎** — 思考 → 行动 → 观察循环，支持多步骤复杂任务、上下文自动压缩与可选反思重规划
@@ -14,53 +28,37 @@
 - **语义缓存** — L1 精确哈希层（缓存键含工具列表），重复请求免 LLM 调用
 - **多供应商故障转移** — 指数退避重试 + 熔断器 + 自动切换备用模型
 - **记忆分层存储** — 长期记忆与用户画像多层落盘：remote 全量 + sqlite/file 按保留窗口（未配远端时 sqlite 全量）；首次配远端自动回迁存量；会话创建预热最近历史
-- **健康自检（Doctor）** — 内置 9 项环境检查，支持自动修复常见问题
+- **可观测性** — Prometheus 指标端点（`/metrics`：LLM 调用/重试/熔断/渠道消息/投递/会话，自实现零依赖）+ 健康自检（Doctor）9 项环境检查
 
-## 项目结构
+## 📚 目录
 
-```
-tommy-catty/
-├── cmd/
-│   ├── agent/main.go            # CLI 入口（交互式 REPL）
-│   ├── server/main.go           # HTTP 服务入口（多用户 + Channel 接入层）
-│   └── memstore/main.go         # 记忆存储服务（remote 后端）与迁移工具
-├── config/
-│   ├── config.go                # 配置加载与解析
-│   ├── config.yaml              # 主配置文件
-│   ├── policy.yaml              # 安全策略配置
-│   ├── agent.md / soul.md       # Persona 文件
-├── internal/
-│   ├── llm/                     # LLM 网关：路由/重试/熔断/降级、语义缓存、Token 计量
-│   ├── engine/                  # ReAct 执行引擎
-│   ├── tool/                    # 工具注册表与内置工具（含 db_query、kb）
-│   ├── security/                # 安全策略引擎（五检查点）+ 审计日志
-│   ├── session/                 # 会话管理、per-user 限流、Persona 组装
-│   ├── memory/                  # 记忆系统（工作记忆 + 冲突消解）
-│   ├── memstore/                # 记忆持久化（file/sqlite/remote 后端 + REST 服务）
-│   ├── skill/                   # Skill 生成/匹配、生成门控、版本管理
-│   ├── channel/                 # Channel 接入层 Hub 与 8 种渠道 adapter
-│   ├── ctxmgr/                  # 上下文压缩
-│   ├── search/                  # 搜索引擎（DuckDuckGo/Tavily）
-│   ├── kb/                      # 本地知识库（BM25）
-│   ├── mcp/                     # MCP 远程工具客户端
-│   ├── trace/                   # 执行追踪
-│   ├── doctor/                  # 健康自检
-│   └── bootstrap/               # 组件装配
-├── data/                        # Skill、审计日志、用户画像与长期记忆持久化
-├── go.mod
-└── go.sum
-```
+- [快速开始](#快速开始)
+- [模型接入](#模型接入)
+- [HTTP API](#http-api前缀-apiv1)
+- [渠道接入](#渠道接入channel)
+- [命令行命令](#命令行命令)
+- [安全策略](#安全策略)
+- [内置工具](#内置工具)
+- [健康自检](#健康自检)
+- [项目结构](#项目结构)
+- [文档](#文档)
+- [技术栈](#技术栈)
+- [License](#license)
 
-## 快速开始
+## 🚀 快速开始
 
 ### 环境要求
 
 - Go 1.26+
 - 网络可访问 LLM API 端点
 
-### 编译构建
+### 安装
 
 ```bash
+# 方式一：直接构建
+git clone https://github.com/wenruigao/tommy-catty.git
+cd tommy-catty
+
 # 国内网络建议设置代理
 export GOPROXY=https://goproxy.cn,direct
 
@@ -68,6 +66,10 @@ go mod tidy
 go build -o bin/tommy-agent ./cmd/agent     # CLI
 go build -o bin/tommy-server ./cmd/server   # HTTP / 渠道
 go build -o bin/tommy-memstore ./cmd/memstore  # 记忆存储服务（remote 后端，可选）
+
+# 方式二：go install（需 Go 1.26+）
+go install github.com/wenruigao/tommy-catty/cmd/agent@latest
+go install github.com/wenruigao/tommy-catty/cmd/server@latest
 ```
 
 ### 配置 API Key
@@ -93,7 +95,7 @@ CLI 启动后进入交互式界面，直接输入自然语言描述即可执行�
   📝 Go 1.25 主要新特性包括...
 ```
 
-## 模型接入
+## 🔌 模型接入
 
 在 `config/config.yaml` 的 `llm.providers` 下添加条目即可：
 
@@ -124,7 +126,7 @@ llm:
 
 故障转移：主供应商失败时指数退避重试（默认 3 次），仍失败则熔断并切换 `fallback_provider`。
 
-## HTTP API（前缀 /api/v1）
+## 🌐 HTTP API（前缀 /api/v1）
 
 | 方法与路径 | 说明 |
 |------------|------|
@@ -133,10 +135,11 @@ llm:
 | `POST /api/v1/clear` | 清空会话记忆 |
 | `GET /api/v1/usage` | Token 用量统计（分模型、缓存命中率、日预算） |
 | `GET /api/v1/health` | 健康检查 |
+| `GET /metrics` | Prometheus 指标（LLM/渠道/会话，自实现 exposition format） |
 
 认证模式：`header`（内网信任 X-User-ID）/ `api_key` / `jwt`（HS256，exp 必填）。
 
-## 渠道接入（Channel）
+## 💬 渠道接入（Channel）
 
 `config/config.yaml` 增加 `channels` 段即可接入，会话键 `"渠道名:用户/群ID"` 与 HTTP 身份隔离，限流/门禁/审计自动生效：
 
@@ -153,7 +156,7 @@ llm:
 
 启用渠道但必填凭证缺失会拒绝启动；未配置时接入层完全不启动。
 
-## 命令行命令
+## ⌨️ 命令行命令
 
 | 命令 | 功能 |
 |------|------|
@@ -167,7 +170,7 @@ llm:
 | `/trace` | 查看最近一次执行追踪 |
 | `/clear` | 清空会话记忆 |
 
-## 安全策略
+## 🛡️ 安全策略
 
 策略文件位于 `config/policy.yaml`，采用声明式 YAML 定义（另有内置模板策略自动加载）：
 
@@ -188,7 +191,7 @@ policies:
 - **效果**：`deny`、`require_approval`（CLI 交互审批；HTTP/渠道自动拒绝）、`redact`、`throttle`、`allow`
 - **审计**：L2+ 工具调用与策略决策写入 `data/audit.jsonl`（JSONL 追加，可追溯）
 
-## 内置工具
+## 🧰 内置工具
 
 | 工具 | 功能 | 风险等级 |
 |------|------|----------|
@@ -202,7 +205,7 @@ policies:
 | `shell_exec` | 执行 Shell 命令（危险命令兜底 + 目录白名单） | L3 (高危) |
 | MCP 远程工具 | 经 Model Context Protocol 动态注册 | 可配 |
 
-## 健康自检
+## 🩺 健康自检
 
 运行 `/doctor` 执行完整环境检查：
 
@@ -222,13 +225,49 @@ policies:
 
 启动时自动执行快速自检（仅 Critical 级别），发现问题会提示运行 `/doctor`。
 
-## 文档
+## 📁 项目结构
+
+```
+tommy-catty/
+├── cmd/
+│   ├── agent/main.go            # CLI 入口（交互式 REPL）
+│   ├── server/main.go           # HTTP 服务入口（多用户 + Channel 接入层）
+│   └── memstore/main.go         # 记忆存储服务（remote 后端）与迁移工具
+├── config/
+│   ├── config.go                # 配置加载与解析
+│   ├── config.yaml              # 主配置文件
+│   ├── policy.yaml              # 安全策略配置
+│   ├── agent.md / soul.md       # Persona 文件
+├── internal/
+│   ├── llm/                     # LLM 网关：路由/重试/熔断/降级、语义缓存、Token 计量
+│   ├── engine/                  # ReAct 执行引擎
+│   ├── tool/                    # 工具注册表与内置工具（含 db_query、kb）
+│   ├── security/                # 安全策略引擎（五检查点）+ 审计日志
+│   ├── session/                 # 会话管理、per-user 限流、Persona 组装
+│   ├── memory/                  # 记忆系统（工作记忆 + 冲突消解）
+│   ├── memstore/                # 记忆持久化（file/sqlite/remote 后端 + REST 服务）
+│   ├── skill/                   # Skill 生成/匹配、生成门控、版本管理
+│   ├── channel/                 # Channel 接入层 Hub 与 8 种渠道 adapter
+│   ├── ctxmgr/                  # 上下文压缩
+│   ├── search/                  # 搜索引擎（DuckDuckGo/Tavily）
+│   ├── kb/                      # 本地知识库（BM25）
+│   ├── mcp/                     # MCP 远程工具客户端
+│   ├── metrics/                 # 轻量指标采集（自实现，零第三方依赖）
+│   ├── trace/                   # 执行追踪
+│   ├── doctor/                  # 健康自检
+│   └── bootstrap/               # 组件装配
+├── data/                        # Skill、审计日志、用户画像与长期记忆持久化
+├── go.mod
+└── go.sum
+```
+
+## 📖 文档
 
 - 技术方案：`AI_Agent_技术方案.md`
 - 使用手册：`Tommy-Cat_Agent_使用手册.md`
 - 手动测试清单：`手动运行手册.md`
 
-## 技术栈
+## 🛠️ 技术栈
 
 - **语言**: Go 1.26
 - **依赖**: google/uuid, gopkg.in/yaml.v3 等（HTTP 用标准库）
@@ -236,6 +275,16 @@ policies:
 - **协议**: OpenAI Chat Completions API（SSE 流式）+ Anthropic Messages API
 - **平台**: macOS / Linux（Windows 未支持）
 
-## License
+## 🤝 贡献
 
-MIT
+欢迎提交 Issue 与 Pull Request。请保持：
+
+- 代码格式化：`gofmt -l .` 应无输出
+- 测试通过：`go test ./...` 全绿
+- 提交信息遵循 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:` 等）
+
+CI 会自动检查 gofmt / go vet / go test 与 Linux、macOS 交叉编译。
+
+## 📄 License
+
+[MIT](./LICENSE)
