@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/security"
+	"github.com/wenruigao/tommy-catty/internal/security"
 )
 
 // TestToolGateAdapter_ToolRiskPassthrough 验证 CheckToolCall 会将工具风险等级

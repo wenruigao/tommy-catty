@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/engine"
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/search"
+	"github.com/wenruigao/tommy-catty/internal/engine"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/search"
 	"gopkg.in/yaml.v3"
 )
 

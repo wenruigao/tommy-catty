@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/ctxmgr"
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/ctxmgr"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/tool"
 )
 
 // TestBuildSystemPrompt 验证系统提示词组装的结构与优先级标注。

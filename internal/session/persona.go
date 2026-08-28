@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tommy-cat/agent/internal/memstore"
+	"github.com/wenruigao/tommy-catty/internal/memstore"
 )
 
 // 兜底人格文本：入口启动时读取 agent.md / soul.md 失败时使用，

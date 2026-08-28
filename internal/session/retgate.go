@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/security"
+	"github.com/wenruigao/tommy-catty/internal/security"
 )
 
 // ReturnGateAdapter 将安全策略引擎适配为 engine.ToolReturnGate 接口，

@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/memstore"
+	"github.com/wenruigao/tommy-catty/internal/memstore"
 )
 
 func main() {

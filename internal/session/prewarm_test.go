@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/memory"
-	"github.com/tommy-cat/agent/internal/memstore"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/memory"
+	"github.com/wenruigao/tommy-catty/internal/memstore"
 )
 
 // TestSessionPrewarmInjectsHistory 验证会话创建时预热最近长期记忆进入

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/security"
+	"github.com/wenruigao/tommy-catty/internal/security"
 )
 
 // TestToolGate_L3DefaultApproval 验证风险等级兜底审批：

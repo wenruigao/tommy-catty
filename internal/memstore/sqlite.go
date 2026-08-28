@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/memory"
+	"github.com/wenruigao/tommy-catty/internal/memory"
 
 	_ "modernc.org/sqlite" // 注册 "sqlite" 驱动（纯 Go 实现，无 CGO）
 )

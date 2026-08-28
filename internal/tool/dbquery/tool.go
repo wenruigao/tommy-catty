@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/tool"
 )
 
 // DBQueryTool 数据库只读查询工具。

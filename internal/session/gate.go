@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/security"
+	"github.com/wenruigao/tommy-catty/internal/security"
 )
 
 const (

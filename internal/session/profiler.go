@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/memstore"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/memstore"
 )
 
 // profilerHistoryLimit 送给 LLM 总结的最近会话消息条数上限。

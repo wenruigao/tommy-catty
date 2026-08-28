@@ -14,8 +14,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/tommy-cat/agent/config"
-	"github.com/tommy-cat/agent/internal/security"
+	"github.com/wenruigao/tommy-catty/config"
+	"github.com/wenruigao/tommy-catty/internal/security"
 )
 
 // configManager /config 命令的执行器

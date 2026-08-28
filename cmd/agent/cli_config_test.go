@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tommy-cat/agent/config"
+	"github.com/wenruigao/tommy-catty/config"
 )
 
 // newTestConfigManager 在临时目录创建主配置并构建执行器。

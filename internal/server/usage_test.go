@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/llm"
 )
 
 // TestHandleUsage 验证用量端点返回计量汇总与预算信息。

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/tool"
 )
 
 // ============================================================

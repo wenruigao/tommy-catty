@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/tommy-cat/agent/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/tool"
 )
 
 // DelegateTaskTool 实现 tool.Tool 接口，供主 Agent 将复杂任务

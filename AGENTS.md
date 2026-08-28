@@ -6,7 +6,7 @@
 
 Tommy-Cat Agent 是一个基于 Go 语言开发的通用任务智能体（AI Agent），采用 ReAct（Reasoning + Acting）执行循环：思考（Thought）→ 行动（Action）→ 观察（Observation），直到产出最终答案。
 
-- **模块路径**: `github.com/tommy-cat/agent`
+- **模块路径**: `github.com/wenruigao/tommy-catty`
 - **Go 版本**: go.mod 声明 `go 1.25.0`（README 中写 1.22+，以 go.mod 为准）
 - **外部依赖极少**: 直接依赖仅 `github.com/google/uuid` 和 `gopkg.in/yaml.v3`；`modernc.org/sqlite` 仅在测试中作为 sqlite 驱动使用
 - **LLM 协议**: 支持两种协议，经供应商配置的 `protocol` 字段选择——OpenAI Chat Completions 兼容协议（默认，支持 tool calling）与 Anthropic Messages API（`protocol: "anthropic"`，对应 `internal/llm/anthropic.go`），任何兼容服务均可通过 YAML 声明式接入，无需改代码

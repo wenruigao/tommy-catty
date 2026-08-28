@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/tool"
-	"github.com/tommy-cat/agent/internal/trace"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/trace"
 )
 
 // scriptedLLM 按顺序返回预置响应：第一次触发工具调用，第二次给出最终答案。

@@ -1,4 +1,4 @@
-module github.com/tommy-cat/agent
+module github.com/wenruigao/tommy-catty
 
 go 1.26.0
 

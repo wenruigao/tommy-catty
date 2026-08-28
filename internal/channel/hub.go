@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/engine"
-	"github.com/tommy-cat/agent/internal/metrics"
-	"github.com/tommy-cat/agent/internal/session"
+	"github.com/wenruigao/tommy-catty/internal/engine"
+	"github.com/wenruigao/tommy-catty/internal/metrics"
+	"github.com/wenruigao/tommy-catty/internal/session"
 )
 
 // defaultMaxChunk 出站消息默认分片上限（rune 计数，渠道实现 Chunker 可覆盖）。

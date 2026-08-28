@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/security"
+	"github.com/wenruigao/tommy-catty/internal/security"
 )
 
 // newGateSecurityEngine 构建一个带测试策略的安全引擎：

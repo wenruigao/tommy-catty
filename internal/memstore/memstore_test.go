@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/memory"
+	"github.com/wenruigao/tommy-catty/internal/memory"
 )
 
 // runStoreContract 对任意 Store 实现执行统一契约测试：

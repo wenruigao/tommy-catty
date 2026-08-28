@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/ctxmgr"
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/ctxmgr"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/tool"
 
 	"github.com/google/uuid"
 
 	// 本函数内局部变量名为 trace（ExecutionTrace），故包名取别名避免遮蔽
-	tracepkg "github.com/tommy-cat/agent/internal/trace"
+	tracepkg "github.com/wenruigao/tommy-catty/internal/trace"
 )
 
 // Run 执行 ReAct 循环，处理用户目标并返回完整的执行追踪。

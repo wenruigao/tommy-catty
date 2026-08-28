@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/memory"
-	"github.com/tommy-cat/agent/internal/memstore"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/memory"
+	"github.com/wenruigao/tommy-catty/internal/memstore"
 )
 
 // TestLongTermPersistenceAcrossSessions 验证长期记忆在"会话重启"

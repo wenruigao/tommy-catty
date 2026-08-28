@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tommy-cat/agent/config"
-	"github.com/tommy-cat/agent/internal/memstore"
+	"github.com/wenruigao/tommy-catty/config"
+	"github.com/wenruigao/tommy-catty/internal/memstore"
 	"gopkg.in/yaml.v3"
 )
 

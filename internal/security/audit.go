@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/metrics"
+	"github.com/wenruigao/tommy-catty/internal/metrics"
 )
 
 // auditEntry 单条审计日志记录（JSONL 格式落盘）。

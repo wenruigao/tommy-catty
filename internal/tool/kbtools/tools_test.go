@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/kb"
+	"github.com/wenruigao/tommy-catty/internal/kb"
 )
 
 func setupManager(t *testing.T) *kb.Manager {

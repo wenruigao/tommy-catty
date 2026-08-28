@@ -12,7 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/llm"
 )
 
 // KeyKind 配置键的取值类型

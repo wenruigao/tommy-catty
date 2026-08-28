@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/engine"
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/tool"
-	"github.com/tommy-cat/agent/internal/trace"
+	"github.com/wenruigao/tommy-catty/internal/engine"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/trace"
 )
 
 // Worker 是一个受限的 Agent 实例，拥有特定角色和工具子集。

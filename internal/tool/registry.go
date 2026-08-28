@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/metrics"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/metrics"
 )
 
 // Registry 是工具注册中心，管理所有已注册的工具及其元信息。

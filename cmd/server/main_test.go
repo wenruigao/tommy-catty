@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/security"
+	"github.com/wenruigao/tommy-catty/internal/security"
 )
 
 // newGuardTestEngine 构建测试安全引擎：task_start 包含"危险"的输入被 deny。

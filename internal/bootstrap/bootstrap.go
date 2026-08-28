@@ -8,15 +8,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tommy-cat/agent/config"
-	"github.com/tommy-cat/agent/internal/engine"
-	"github.com/tommy-cat/agent/internal/kb"
-	"github.com/tommy-cat/agent/internal/mcp"
-	"github.com/tommy-cat/agent/internal/multiagent"
-	"github.com/tommy-cat/agent/internal/tool"
-	"github.com/tommy-cat/agent/internal/tool/dbquery"
-	"github.com/tommy-cat/agent/internal/tool/kbtools"
-	"github.com/tommy-cat/agent/internal/trace"
+	"github.com/wenruigao/tommy-catty/config"
+	"github.com/wenruigao/tommy-catty/internal/engine"
+	"github.com/wenruigao/tommy-catty/internal/kb"
+	"github.com/wenruigao/tommy-catty/internal/mcp"
+	"github.com/wenruigao/tommy-catty/internal/multiagent"
+	"github.com/wenruigao/tommy-catty/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/tool/dbquery"
+	"github.com/wenruigao/tommy-catty/internal/tool/kbtools"
+	"github.com/wenruigao/tommy-catty/internal/trace"
 )
 
 // Result 汇总 bootstrap 过程构建的资源，便于调用方做清理。

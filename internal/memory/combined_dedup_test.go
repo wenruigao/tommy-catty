@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/llm"
 )
 
 // TestCombinedStoreSkipsExistingContent 验证已存在于工作记忆中的内容

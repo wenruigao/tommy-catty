@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/security"
+	"github.com/wenruigao/tommy-catty/internal/security"
 )
 
 // newOutputSecurityEngine 构建带输出策略的测试安全引擎：

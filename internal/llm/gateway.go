@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/metrics"
+	"github.com/wenruigao/tommy-catty/internal/metrics"
 )
 
 var (

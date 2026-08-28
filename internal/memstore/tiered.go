@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/memory"
+	"github.com/wenruigao/tommy-catty/internal/memory"
 )
 
 // metaRemoteSynced 是 sqlite _meta 表中标记"本地存量已回迁远端"的键。

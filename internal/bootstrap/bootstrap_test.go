@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tommy-cat/agent/config"
-	"github.com/tommy-cat/agent/internal/tool"
+	"github.com/wenruigao/tommy-catty/config"
+	"github.com/wenruigao/tommy-catty/internal/tool"
 
 	_ "modernc.org/sqlite"
 )

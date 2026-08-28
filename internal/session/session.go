@@ -9,14 +9,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/ctxmgr"
-	"github.com/tommy-cat/agent/internal/engine"
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/memory"
-	"github.com/tommy-cat/agent/internal/memstore"
-	"github.com/tommy-cat/agent/internal/metrics"
-	"github.com/tommy-cat/agent/internal/tool"
-	"github.com/tommy-cat/agent/internal/trace"
+	"github.com/wenruigao/tommy-catty/internal/ctxmgr"
+	"github.com/wenruigao/tommy-catty/internal/engine"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/memory"
+	"github.com/wenruigao/tommy-catty/internal/memstore"
+	"github.com/wenruigao/tommy-catty/internal/metrics"
+	"github.com/wenruigao/tommy-catty/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/trace"
 )
 
 // ErrRateLimited 当用户请求被限流时返回此错误。

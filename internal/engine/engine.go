@@ -6,10 +6,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/ctxmgr"
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/tool"
-	"github.com/tommy-cat/agent/internal/trace"
+	"github.com/wenruigao/tommy-catty/internal/ctxmgr"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/trace"
 )
 
 // State 表示引擎当前的执行状态。

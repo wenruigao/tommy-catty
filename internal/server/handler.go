@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/metrics"
-	"github.com/tommy-cat/agent/internal/security"
-	"github.com/tommy-cat/agent/internal/session"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/metrics"
+	"github.com/wenruigao/tommy-catty/internal/security"
+	"github.com/wenruigao/tommy-catty/internal/session"
 )
 
 // Handler 持有 HTTP API 所需的共享依赖。

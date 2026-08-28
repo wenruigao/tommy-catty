@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/engine"
-	"github.com/tommy-cat/agent/internal/session"
+	"github.com/wenruigao/tommy-catty/internal/engine"
+	"github.com/wenruigao/tommy-catty/internal/session"
 )
 
 // fakeChannel 记录 Send 调用的测试渠道。

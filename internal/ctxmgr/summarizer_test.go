@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/llm"
 )
 
 // mockChatFn 返回一个产出固定内容的 ChatFunc。

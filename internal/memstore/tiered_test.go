@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/memory"
+	"github.com/wenruigao/tommy-catty/internal/memory"
 )
 
 // seedEntries 返回两条旧记忆（10 天前）+ 两条新记忆。

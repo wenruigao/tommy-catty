@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/llm"
 )
 
 // ReflectionConfig 反思机制配置。

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/llm"
 )
 
 // ChatFunc 定义调用 LLM 的函数签名（与 engine.LLMClient.Chat 兼容）。

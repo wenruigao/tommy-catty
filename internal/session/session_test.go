@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/ctxmgr"
-	"github.com/tommy-cat/agent/internal/llm"
-	"github.com/tommy-cat/agent/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/ctxmgr"
+	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/tool"
 )
 
 // mockLLM 是一个简单的 mock LLM，直接返回固定回复（无工具调用）。

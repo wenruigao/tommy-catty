@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tommy-cat/agent/internal/kb"
-	"github.com/tommy-cat/agent/internal/tool"
+	"github.com/wenruigao/tommy-catty/internal/kb"
+	"github.com/wenruigao/tommy-catty/internal/tool"
 )
 
 // ============================================================

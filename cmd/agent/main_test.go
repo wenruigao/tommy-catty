@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tommy-cat/agent/internal/engine"
-	"github.com/tommy-cat/agent/internal/skill"
+	"github.com/wenruigao/tommy-catty/internal/engine"
+	"github.com/wenruigao/tommy-catty/internal/skill"
 )
 
 // TestBuildTraceJSON_GenerateSkill 验证 skill.BuildTraceJSON 产出的 JSON 结构
