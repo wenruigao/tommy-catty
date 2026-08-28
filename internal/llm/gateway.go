@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/tommy-cat/agent/internal/metrics"
 )
 
 var (
@@ -140,12 +142,15 @@ func NewGateway() *Gateway {
 func NewGatewayWithRetry(policy RetryPolicy, cbConfig CircuitBreakerConfig) *Gateway {
 	executor := NewRetryExecutor(policy, cbConfig)
 
-	// 注册默认日志钩子
+	// 注册默认日志钩子 + 指标上报
 	executor.AddHook(func(event RetryEvent) {
 		log.Printf("[RETRY] provider=%s attempt=%d/%d category=%v backoff=%s circuit=%s err=%v",
 			event.Provider, event.Attempt, event.MaxRetries,
 			event.Category, event.Backoff.Round(time.Millisecond),
 			event.CircuitState, event.Error)
+		// ★ 指标上报：重试次数 + 熔断器状态
+		metrics.LLMRetries().With(map[string]string{"provider": event.Provider}).Add(1)
+		metrics.LLMCircuitState().With(map[string]string{"provider": event.Provider}).Set(float64(event.CircuitState))
 	})
 
 	return &Gateway{
@@ -283,6 +288,7 @@ func (g *Gateway) Chat(ctx context.Context, req ChatRequest) (ChatResponse, erro
 	// 语义缓存 L1：命中直接返回（流式请求不进缓存）
 	if c := g.Cache(); c != nil && !req.Stream {
 		if resp, hit := c.Get(req); hit {
+			metrics.LLMCalls().With(map[string]string{"provider": resp.Model, "status": "success"}).Add(1)
 			return resp, nil
 		}
 	}
@@ -316,11 +322,13 @@ func (g *Gateway) Chat(ctx context.Context, req ChatRequest) (ChatResponse, erro
 				g.afterChatSuccess(req, resp)
 				return resp, nil
 			}
+			metrics.LLMCalls().With(map[string]string{"provider": fallback.Name(), "status": "error"}).Add(1)
 			return ChatResponse{}, fmt.Errorf("%w: primary(%s): %v; fallback(%s): %v",
 				ErrAllProvidersFailed, provider.Name(), err, fallback.Name(), ferr)
 		}
 	}
 
+	metrics.LLMCalls().With(map[string]string{"provider": provider.Name(), "status": "error"}).Add(1)
 	return ChatResponse{}, fmt.Errorf("%w: %v", ErrAllProvidersFailed, err)
 }
 
@@ -414,9 +422,17 @@ func (g *Gateway) getProvider(name string) (LLMProvider, error) {
 
 // afterChatSuccess 成功调用后的统一收尾：记录 Token 计量（含 80% 预算预警）并写语义缓存。
 func (g *Gateway) afterChatSuccess(req ChatRequest, resp ChatResponse) {
+	// ★ 指标上报：LLM 调用成功
+	metrics.LLMCalls().With(map[string]string{"provider": resp.Model, "status": "success"}).Add(1)
+
 	if m := g.Meter(); m != nil {
 		m.RecordUsage(UsageExecution, resp.Model, resp.Usage)
+		// ★ 指标上报：Token 消耗
+		metrics.LLMTokens().With(map[string]string{"category": "execution", "model": resp.Model}).Add(float64(resp.Usage.TotalTokens))
+		metrics.LLMTokensCached().Add(float64(resp.Usage.PromptDetails.CachedTokens))
 		used, limit, _ := m.CheckBudget()
+		metrics.LLMBudgetUsed().Set(float64(used))
+		metrics.LLMBudgetLimit().Set(float64(limit))
 		if limit > 0 && float64(used) >= float64(limit)*0.8 {
 			today := time.Now().Truncate(24 * time.Hour)
 			g.mu.Lock()

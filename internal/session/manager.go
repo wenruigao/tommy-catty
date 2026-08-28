@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/tommy-cat/agent/internal/metrics"
 )
 
 // ManagerConfig SessionManager 的配置。
@@ -87,6 +89,7 @@ func (sm *SessionManager) GetOrCreate(userID string) *UserSession {
 
 	s := NewUserSession(userID, sm.deps)
 	sm.sessions[userID] = s
+	metrics.SessionCreated().Add(1)
 	return s
 }
 

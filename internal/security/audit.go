@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/tommy-cat/agent/internal/metrics"
 )
 
 // auditEntry 单条审计日志记录（JSONL 格式落盘）。
@@ -109,6 +111,9 @@ func (l *AuditLogger) LogAudit(cp Checkpoint, decisions []Decision) {
 			}
 		}
 	}
+
+	// ★ 指标上报：安全事件
+	metrics.SecurityEvents().With(map[string]string{"checkpoint": cp.Type, "effect": effect}).Add(1)
 
 	l.Log(auditEntry{
 		UserID:     cp.UserID,

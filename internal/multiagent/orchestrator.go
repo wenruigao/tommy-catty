@@ -11,6 +11,7 @@ import (
 
 	"github.com/tommy-cat/agent/internal/engine"
 	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/tommy-cat/agent/internal/metrics"
 	"github.com/tommy-cat/agent/internal/tool"
 	"github.com/tommy-cat/agent/internal/trace"
 )
@@ -56,6 +57,7 @@ func NewOrchestrator(
 // Execute 接收用户目标，分解任务并编排 Worker 执行，返回最终结果。
 func (o *Orchestrator) Execute(ctx context.Context, goal string) (*OrchestratorResult, error) {
 	start := time.Now()
+	metrics.AgentDelegations().Add(1)
 	result := &OrchestratorResult{
 		Results: make(map[string]*SubTaskResult),
 	}
@@ -227,6 +229,10 @@ func (o *Orchestrator) schedule(ctx context.Context, plan *Plan, bb *Blackboard,
 					sr.Status = "timeout"
 					sr.Error = "Worker 执行超时"
 				}
+
+				// ★ 指标上报：Worker 执行结果 + 耗时
+				metrics.AgentWorkers().With(map[string]string{"role": st.Role, "status": sr.Status}).Add(1)
+				metrics.AgentWorkerDuration().With(map[string]string{"role": st.Role}).Add(sr.Duration.Seconds())
 
 				mu.Lock()
 				bb.Put(st.ID, sr)

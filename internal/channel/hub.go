@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tommy-cat/agent/internal/engine"
+	"github.com/tommy-cat/agent/internal/metrics"
 	"github.com/tommy-cat/agent/internal/session"
 )
 
@@ -183,8 +184,10 @@ func (h *Hub) Dispatch(name string, msg InboundMessage) {
 	if strings.TrimSpace(msg.Text) == "" {
 		return
 	}
+	metrics.ChannelMessages().With(map[string]string{"channel": name, "status": "received"}).Add(1)
 	if h.isDuplicate(name, msg.MessageID) {
 		log.Printf("渠道 %q 丢弃重复消息 %q（平台重推/回调重试）", name, msg.MessageID)
+		metrics.ChannelMessages().With(map[string]string{"channel": name, "status": "dedup"}).Add(1)
 		return
 	}
 	if !userAllowed(cc.AllowUsers, msg.UserID) {
@@ -226,14 +229,17 @@ func (h *Hub) execute(name string, msg InboundMessage, sessionKey string, timeou
 	switch {
 	case errors.Is(err, session.ErrRateLimited):
 		reply = "请求过于频繁，请稍后再试（渠道限流）"
+		metrics.ChannelMessages().With(map[string]string{"channel": name, "status": "failed"}).Add(1)
 	case err != nil:
 		log.Printf("渠道 %q 任务执行失败（会话 %s）: %v", name, sessionKey, err)
 		reply = "任务执行失败或被安全策略拦截，请检查输入内容或联系管理员"
+		metrics.ChannelMessages().With(map[string]string{"channel": name, "status": "failed"}).Add(1)
 	default:
 		reply = extractAnswer(result)
 		if reply == "" {
 			reply = "任务已执行，但没有可回复的文本结果"
 		}
+		metrics.ChannelMessages().With(map[string]string{"channel": name, "status": "executed"}).Add(1)
 	}
 
 	h.deliver(name, OutboundMessage{
@@ -276,6 +282,9 @@ func (h *Hub) deliver(channelName string, msg OutboundMessage) {
 		m.Text = part
 		if err := h.sendWithRetry(ch, m); err != nil {
 			log.Printf("警告: 渠道 %q 投递最终失败（会话 %s）: %v", channelName, msg.ChatID, err)
+			metrics.ChannelDelivery().With(map[string]string{"channel": channelName, "status": "failed"}).Add(1)
+		} else {
+			metrics.ChannelDelivery().With(map[string]string{"channel": channelName, "status": "success"}).Add(1)
 		}
 	}
 }

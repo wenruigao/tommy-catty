@@ -14,6 +14,7 @@ import (
 	"github.com/tommy-cat/agent/internal/llm"
 	"github.com/tommy-cat/agent/internal/memory"
 	"github.com/tommy-cat/agent/internal/memstore"
+	"github.com/tommy-cat/agent/internal/metrics"
 	"github.com/tommy-cat/agent/internal/tool"
 	"github.com/tommy-cat/agent/internal/trace"
 )
@@ -215,6 +216,7 @@ func (s *UserSession) Run(ctx context.Context, goal string) (*engine.ExecutionTr
 
 	// 限流检查（per-user 滑动窗口）
 	if !s.limiter.Allow() {
+		metrics.SessionRateLimited().Add(1)
 		return nil, ErrRateLimited
 	}
 

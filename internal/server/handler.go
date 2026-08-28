@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/tommy-cat/agent/internal/metrics"
 	"github.com/tommy-cat/agent/internal/security"
 	"github.com/tommy-cat/agent/internal/session"
 )
@@ -34,6 +35,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/clear", h.handleClear)
 	mux.HandleFunc("GET /api/v1/health", h.handleHealth)
 	mux.HandleFunc("GET /api/v1/usage", h.handleUsage)
+	mux.HandleFunc("GET /metrics", h.handleMetrics)
 }
 
 // --- Request/Response types ---
@@ -203,6 +205,24 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 			"exceeded": exceeded,
 		},
 	})
+}
+
+// handleMetrics 暴露 Prometheus 格式指标（供 Prometheus Server 抓取 → Grafana 展示）。
+// /metrics 端点无需认证（Prometheus 抓取不支持自定义 Header），
+// 指标数据不含敏感信息（仅计数器/瞬时值，不含用户数据或密钥）。
+func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	// 刷新活跃会话数（Gauge 需每次抓取前拉取最新值）
+	metrics.SessionActive().Set(float64(h.SessionMgr.ActiveCount()))
+
+	// 执行所有注册的 Gauge 拉取函数 + 刷新运行时指标
+	metrics.CollectAll()
+
+	// 编码为 Prometheus exposition format
+	body := metrics.DefaultRegistry().Encode()
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(body))
 }
 
 // --- Helpers ---

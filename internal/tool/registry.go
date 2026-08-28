@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tommy-cat/agent/internal/llm"
+	"github.com/tommy-cat/agent/internal/metrics"
 )
 
 // Registry 是工具注册中心，管理所有已注册的工具及其元信息。
@@ -79,9 +80,18 @@ func (r *Registry) Call(ctx context.Context, name string, args map[string]interf
 	}
 
 	// 执行工具
+	start := time.Now()
 	result, err := meta.Execute(execCtx, args)
+	duration := time.Since(start).Seconds()
+	metrics.ToolDuration().With(map[string]string{"tool": name}).Add(duration)
 	if err != nil {
+		metrics.ToolCalls().With(map[string]string{"tool": name, "status": "error"}).Add(1)
 		return Result{}, fmt.Errorf("tool %q execution error: %w", name, err)
+	}
+	if result.Error != "" {
+		metrics.ToolCalls().With(map[string]string{"tool": name, "status": "error"}).Add(1)
+	} else {
+		metrics.ToolCalls().With(map[string]string{"tool": name, "status": "success"}).Add(1)
 	}
 
 	return result, nil
