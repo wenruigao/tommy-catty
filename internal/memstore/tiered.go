@@ -38,9 +38,12 @@ type TieredConfig struct {
 //
 // 首次配置远端时，先把本地存量全量回迁远端（按 ID 幂等），
 // 成功打标 remote_synced 后才按窗口修剪本地层。
+//
+// sqlite 层经 AsyncSQLiteStore 包装：写操作投递到后台 worker goroutine
+// 串行执行（不阻塞 ReAct 循环），读操作同步（WAL 模式允许读写并发）。
 type TieredStore struct {
 	remote Store // 可为 nil
-	sqlite *SQLiteStore
+	sqlite *AsyncSQLiteStore
 	file   *FileStore
 
 	sqliteRetention time.Duration
@@ -48,6 +51,7 @@ type TieredStore struct {
 }
 
 // OpenTiered 构建分层存储并执行启动维护（远端回迁 + 本地修剪）。
+// sqlite 层自动包装为 AsyncSQLiteStore（后台写 worker + WAL 并发读）。
 func OpenTiered(cfg TieredConfig) (*TieredStore, error) {
 	sqlitePath := cfg.SQLitePath
 	if sqlitePath == "" {
@@ -61,10 +65,11 @@ func OpenTiered(cfg TieredConfig) (*TieredStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	asyncSq := NewAsyncSQLiteStore(sq, AsyncSQLiteConfig{BufferSize: 256})
 	fs := NewFileStore(fileDir, cfg.ProfilesDir, cfg.MaxEntriesPerUser)
 
 	t := &TieredStore{
-		sqlite:          sq,
+		sqlite:          asyncSq,
 		file:            fs,
 		sqliteRetention: cfg.SQLiteRetention,
 		fileRetention:   cfg.FileRetention,
@@ -96,16 +101,21 @@ func retentionLabel(d time.Duration) string {
 	return d.String()
 }
 
-// SaveMemory 分层写入：远端尽力（失败仅警告），sqlite/file 依次写入并按窗口修剪。
+// SaveMemory 分层写入：
+//   - remote：尽力（失败仅警告）
+//   - sqlite：异步投递到后台 worker（不阻塞调用方）
+//   - file：同步写入（持久性保证层，失败返回错误）
+//
+// 写入后按保留窗口修剪本地层。
 func (t *TieredStore) SaveMemory(ctx context.Context, entry memory.MemoryEntry) error {
 	if t.remote != nil {
 		if err := t.remote.SaveMemory(ctx, entry); err != nil {
 			log.Printf("  ⚠️  memstore: 远端层写入失败（本地层不受影响）: %v", err)
 		}
 	}
-	if err := t.sqlite.SaveMemory(ctx, entry); err != nil {
-		return err
-	}
+	// sqlite 异步写入（fire-and-forget，错误由 worker 日志记录）
+	_ = t.sqlite.SaveMemory(ctx, entry)
+	// file 同步写入（持久性保证）
 	if err := t.file.SaveMemory(ctx, entry); err != nil {
 		return err
 	}
@@ -143,7 +153,7 @@ func (t *TieredStore) SearchMemories(ctx context.Context, userID, query string, 
 	return t.file.SearchMemories(ctx, userID, query, topK)
 }
 
-// DeleteMemories 三层全部清空。
+// DeleteMemories 三层全部清空（sqlite 层异步）。
 func (t *TieredStore) DeleteMemories(ctx context.Context, userID string) error {
 	var firstErr error
 	if t.remote != nil {
@@ -154,25 +164,21 @@ func (t *TieredStore) DeleteMemories(ctx context.Context, userID string) error {
 			}
 		}
 	}
-	if err := t.sqlite.DeleteMemories(ctx, userID); err != nil && firstErr == nil {
-		firstErr = err
-	}
+	_ = t.sqlite.DeleteMemories(ctx, userID) // 异步
 	if err := t.file.DeleteMemories(ctx, userID); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr
 }
 
-// SaveProfile 分层写入：sqlite 为权威层（失败返回错误），远端与 file 尽力而为。
+// SaveProfile 分层写入：sqlite 异步（后台 worker），远端尽力，file 同步兜底。
 func (t *TieredStore) SaveProfile(ctx context.Context, userID, content string) error {
 	if t.remote != nil {
 		if err := t.remote.SaveProfile(ctx, userID, content); err != nil {
 			log.Printf("  ⚠️  memstore: 远端层画像写入失败: %v", err)
 		}
 	}
-	if err := t.sqlite.SaveProfile(ctx, userID, content); err != nil {
-		return err
-	}
+	_ = t.sqlite.SaveProfile(ctx, userID, content) // 异步
 	if err := t.file.SaveProfile(ctx, userID, content); err != nil {
 		log.Printf("  ⚠️  memstore: 本地文件层画像写入失败: %v", err)
 	}
@@ -192,12 +198,12 @@ func (t *TieredStore) LoadProfile(ctx context.Context, userID string) (string, e
 	return t.file.LoadProfile(ctx, userID)
 }
 
-// Close 关闭各层。
+// Close 排空异步写队列后关闭各层。
 func (t *TieredStore) Close() error {
 	if t.remote != nil {
 		_ = t.remote.Close()
 	}
-	return t.sqlite.Close()
+	return t.sqlite.Close() // Close 内部先排空队列再关 DB
 }
 
 // userSynced 判断该用户的本地存量是否已完成远端回迁。
@@ -247,7 +253,7 @@ func (t *TieredStore) backfillUser(ctx context.Context, userID string) error {
 			return fmt.Errorf("画像写入远端失败: %w", err)
 		}
 	}
-	if err := t.sqlite.SetMeta(ctx, userID, metaRemoteSynced, "1"); err != nil {
+	if err := t.sqlite.SetMetaSync(ctx, userID, metaRemoteSynced, "1"); err != nil {
 		return err
 	}
 	log.Printf("  ✅ memstore: 用户 %s 已回迁 %d 条记忆到远端", userID, len(entries))

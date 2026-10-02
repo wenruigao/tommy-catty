@@ -58,7 +58,13 @@ func NewSQLiteStore(path string, maxPerUser int) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memstore: 打开 SQLite 失败: %w", err)
 	}
-	db.SetMaxOpenConns(1) // 单写者，避免 modernc.org/sqlite 并发写锁冲突
+	// WAL 模式：允许读写并发（读不阻塞写、写不阻塞读），
+	// 配合 AsyncSQLiteStore 的后台写 worker 使用。
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("memstore: 启用 WAL 模式失败: %w", err)
+	}
+	db.SetMaxOpenConns(4) // 1 写者 + 多读者（WAL 下读连接不互斥）
 	if _, err := db.Exec(sqliteSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("memstore: 初始化表结构失败: %w", err)
