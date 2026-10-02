@@ -14,7 +14,7 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 - **多入口**：CLI 交互、HTTP API（多用户）、Channel 渠道（钉钉/飞书/微信等 7 平台 + 通用 webhook）
 - **可观测**：执行追踪、Token 计量、JSONL 审计日志
 
-技术栈：Go 1.25，零重型框架（标准库 HTTP），依赖仅 `google/uuid`、`gopkg.in/yaml.v3` 等少量库。
+技术栈：Go 1.26，零重型框架（标准库 HTTP），依赖仅 `google/uuid`、`gopkg.in/yaml.v3`、数据库驱动等少量库。
 
 ## 2. 总体架构
 
@@ -41,8 +41,8 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 │ Registry + 风险等级 L0-L3  │ │ LLM Gateway                     │
 │ 内置工具 / db_query / kb   │ │  多供应商路由 + 重试 + 熔断      │
 │ MCP 远程工具               │ │  + 降级切换 + 语义缓存(L1)       │
-└────────────────────────────┘ │  + Token 计量 (Meter)            │
-                               └─────────────────────────────────┘
+│ 执行沙箱(none/native/ctr)  │ │  + Token 计量 (Meter)            │
+└────────────────────────────┘ └─────────────────────────────────┘
 ┌────────────────────────── 横切关注点 ──────────────────────────┐
 │  安全策略引擎（五检查点 × 五效果）  审计日志(JSONL)             │
 │  执行追踪（内存 + JSONL 导出）      Doctor 健康自检             │
@@ -90,8 +90,8 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
 | `web_search` | DuckDuckGo（免 Key）/ Tavily 搜索 | L0 |
 | `web_fetch` | 网页抓取，内置 SSRF 防护（私网/回环/元数据地址拒绝） | L0 |
 | `file_read` / `file_write` | 文件读写，工作目录沙箱 + 路径穿越防护 | L0 / L2 |
-| `code_run` | 代码执行，独立临时目录，输出 1MB 截断 | L3 |
-| `shell_exec` | Shell 执行，工具层兜底绝对危险命令，工作目录白名单校验；可争议命令（rm）下沉策略层裁决 | L3 |
+| `code_run` | 代码执行，独立临时目录，输出 1MB 截断；经沙箱隔离执行（见 3.11） | L3 |
+| `shell_exec` | Shell 执行，工具层兜底绝对危险命令，工作目录白名单校验；可争议命令（rm）下沉策略层裁决；经沙箱隔离执行（见 3.11） | L3 |
 | `db_query` | 数据库只读查询（SQL 白名单校验 + 连接池 + 结果缓存） | L1 |
 | `kb_search` / `kb_read` / `kb_list` | 本地知识库检索（BM25 倒排索引） | L0 |
 | MCP 远程工具 | 经 Model Context Protocol 从外部 server 动态发现注册 | 可配 |
@@ -225,6 +225,62 @@ multi_agent:
       tools: ["shell_exec", "code_run", "file_read", "file_write"]
 ```
 
+### 3.11 工具执行沙箱（internal/sandbox）
+
+为 `shell_exec` / `code_run` 等 L3 高危工具提供 OS 级执行隔离。沙箱是"执行隔离"层，与引擎 ToolGate 的"策略裁决"层正交：门禁决定"是否允许调用"，沙箱决定"调用在哪里执行"。
+
+**三档实现**（`sandbox.type` 配置选择）：
+
+| 模式 | 隔离机制 | 适用场景 |
+|------|----------|----------|
+| `none`（默认） | 独立进程组 + 超时按进程组整树 SIGKILL + WaitDelay 管道收口 | 开发调试，与旧版行为兼容 |
+| `native` | Linux：非特权用户命名空间（user/pid/net/ipc/uts + 挂载命名空间独立 tmpfs /tmp）+ prlimit 资源限额；macOS：sandbox-exec Seatbelt（默认全拒 + 按需放行） | 单机部署，无需容器运行时 |
+| `container` | docker/podman：`--read-only` 根文件系统 + `--network none` 禁网 + `--cap-drop ALL` + `--security-opt no-new-privileges` + cgroup 内存/CPU/PID 限额 + `--pull never` | 生产环境，最强隔离 |
+
+**核心接口**：
+
+```go
+type Sandbox interface {
+    Name() string                                              // 实现名（审计标注）
+    Available() error                                          // 主机可用性探测
+    Compile(ctx context.Context, spec ExecSpec) (*exec.Cmd, func(), error) // 编译为隔离进程
+}
+```
+
+**资源限额**（`sandbox` 配置节）：
+
+| 参数 | 默认值 | native 实现 | container 实现 |
+|------|--------|-------------|----------------|
+| `timeout_seconds` | 30 | 墙钟超时（进程组组杀） | 同左 |
+| `memory_limit_mb` | 512 | RLIMIT_AS（prlimit） | `--memory` + `--memory-swap` |
+| `cpu_limit_seconds` | 10 | RLIMIT_CPU（prlimit） | 按 CPU/墙钟比换算 `--cpus` |
+| `max_processes` | 64 | 不设（RLIMIT_NPROC 按宿主 UID 统计会误伤） | `--pids-limit` |
+| `allow_net` | false | 不创建 CLONE_NEWNET / Seatbelt allow network* | `--network default` |
+
+**Linux native 实现细节**：
+- clone 时创建 user/pid/ipc/uts（可选 net）命名空间，uid/gid 映射为宿主当前用户
+- 子进程内 unshare 挂载命名空间，挂载独立 tmpfs /tmp（挂载失败 fail-closed）
+- prlimit 包裹设置 RLIMIT_AS / RLIMIT_CPU / RLIMIT_FSIZE
+- Pdeathsig=SIGKILL 防 agent 进程死亡后遗留孤儿
+
+**macOS native 实现细节**：
+- sandbox-exec -p <profile> 包裹目标命令
+- Seatbelt profile：`(deny default)` + 按需放行 process-exec/fork、file-read*（全局）、file-write*（仅工作目录与临时目录）、sysctl-read、mach-lookup
+- 网络默认 `(deny network*)`，`allow_net=true` 时放行
+
+**container 实现细节**：
+- 自动探测 docker/podman（可配 `sandbox.container.runtime`）
+- 工作目录挂载为 `/workspace`，根文件系统只读，临时写入落 tmpfs /tmp
+- 容器内注入 HOME=/tmp、GOCACHE/GOPATH（Go 工具链离线可用）、PYTHONDONTWRITEBYTECODE 等默认环境变量
+- `Available()` 探测运行时守护进程可达 + 镜像已拉取
+- cleanup 回调兜底 `rm -f` 回收容器（超时组杀不会停掉容器）
+
+**降级策略**（`sandbox.on_unavailable`）：
+- `degrade`（默认）：沙箱不可用时降级为 none 并打印告警
+- `error`：拒绝启动
+
+**装配**：`bootstrap.RegisterBuiltinTools` 根据配置构造 Sandbox 实例，注入 CodeRunTool / ShellExecTool；工具执行 Metadata 携带 `sandbox` 字段进审计日志。
+
 ## 4. 关键数据流（HTTP chat 为例）
 
 ```
@@ -233,7 +289,7 @@ POST /api/v1/chat
   → SessionManager 取/建会话 → per-user 限流
   → Persona 组装系统提示词 → Skill 匹配（命中则注入 PromptHints）
   → ReAct 循环：LLM Gateway（缓存→供应商→重试/熔断/降级）
-      ├─ 工具调用：tool_call 策略评估 → 执行 → tool_return 清洗
+      ├─ 工具调用：tool_call 策略评估 → 沙箱隔离执行 → tool_return 清洗
       ├─ 上下文超限时自动压缩
       └─ delegate_task 调用 → Orchestrator 分解任务
           ├─ Worker 并行/串行执行（各自独立 Engine + 工具子集）
@@ -259,6 +315,7 @@ POST /api/v1/chat
 | `mcp.servers` | MCP 远程工具（stdio / sse） |
 | `channels` | 渠道接入层（8 种渠道声明式配置） |
 | `multi_agent` | 多 Agent 协作：编排器参数 + 角色定义（角色名/描述/提示词/工具白名单），默认禁用 |
+| `sandbox` | 工具执行沙箱：type（none/native/container）、资源限额（timeout/memory/cpu/processes）、allow_net、on_unavailable 降级策略、container 子节（runtime/image/tmpfs/user） |
 | `policy_file` / `audit_log_path` / `skill_store_path` / `work_dir` | 安全与持久化路径 |
 
 **覆盖层（overlay）**：与主配置同目录的 `config.local.yaml` 作为本地覆盖层，加载优先级 内置默认 < `config.yaml` < `config.local.yaml`。CLI `/config` 命令族（set/unset/patch/reset/schema/validate，参考 OpenClaw config 模块设计）仅读写覆盖层（白名单键、类型校验、密钥脱敏、`env:NAME` 环境变量引用、补丁原子写入），主配置文件永不改动；HTTP 与 CLI 共用同一加载入口 `config.LoadWithOverlay`。
@@ -281,6 +338,7 @@ POST /api/v1/chat
 - CLI `/config` 运行时配置管理（overlay 覆盖层持久化 + 键白名单校验 + 脱敏与审计；schema/validate/patch/reset 与 `env:` 引用，参考 OpenClaw config 模块）
 - 记忆持久化（memstore）：长期记忆 + 用户画像统一 Store 抽象，file/sqlite/remote 三后端配置切换；`cmd/memstore` 提供远程记忆服务（serve）与存量画像迁移（migrate）；doctor 增加存储连通性检查
 - 多 Agent 协作（multiagent）：Orchestrator-Worker 模式，`delegate_task` 工具供主 Agent 委派复杂任务；角色 YAML 声明式定义（工具白名单 + 独立提示词），拓扑排序调度 + 并发执行 + Blackboard 结果共享；Worker 最小权限 + 安全门禁继承 + 无环检测
+- 工具执行沙箱（sandbox）：shell_exec / code_run 经 `internal/sandbox` 接口驱动执行隔离，三档可选（none 直通 / native 命名空间+Seatbelt / container 容器）；资源限额（内存/CPU/进程数/网络）统一配置；不可用时按 on_unavailable 降级或拒绝启动；doctor 增加沙箱可用性探测
 
 ### P2 路线图（未实现，代码中已标注）
 
@@ -292,6 +350,6 @@ POST /api/v1/chat
 
 ## 8. 测试与工程
 
-- 全量 `go test ./...`（23 包）离线可跑；关键接线均有针对性单测（缓存键含工具、预算门禁、usage 端点、门控四条件、版本快照、db 缓存正确性约束等）
+- 全量 `go test ./...`（25 包）离线可跑；关键接线均有针对性单测（缓存键含工具、预算门禁、usage 端点、门控四条件、版本快照、db 缓存正确性约束、沙箱超时按进程组整树终止等）
 - CI：gofmt / vet / test / 双平台编译
-- 平台：macOS / Linux（`internal/tool/limits_*.go` 未提供 Windows 实现）
+- 平台：macOS / Linux（`internal/sandbox/native_*.go` 提供 darwin/linux 原生沙箱实现，Windows 无对应实现）
