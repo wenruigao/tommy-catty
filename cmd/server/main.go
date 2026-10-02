@@ -306,8 +306,19 @@ func main() {
 		UserID: cfg.Server.AuthUserID,
 	})(mux)
 
+	// per-user HTTP 限流（认证之后、业务之前）
+	rateLimiter := server.NewUserRateLimiter(server.RateLimitConfig{
+		RequestsPerMinute: cfg.Server.RateLimit.RequestsPerMinute,
+		Burst:             cfg.Server.RateLimit.Burst,
+	})
+	if rateLimiter != nil {
+		defer rateLimiter.Stop()
+		log.Printf("  🔒 HTTP 限流: %d 次/分钟 (burst=%d)", cfg.Server.RateLimit.RequestsPerMinute, cfg.Server.RateLimit.Burst)
+	}
+	rateLimited := server.RateLimitMiddleware(rateLimiter)(authed)
+
 	// chat 请求进入 handler 前做 task_start 策略评估（deny 直接返回 400）
-	guarded := taskStartGuard(secEngine, authed)
+	guarded := taskStartGuard(secEngine, rateLimited)
 
 	// 外层路由：/api/* 经认证与安全策略；/channels/* 为渠道接入层（独立令牌鉴权，
 	// 不走 /api 的认证中间件，与 OpenClaw 的 Channel 独立路由口径一致）

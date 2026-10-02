@@ -135,6 +135,9 @@ engine:
 #   auth_jwt_secret: "${AGENT_JWT_SECRET}" # auth_mode=jwt 时必填（HS256 签名密钥）
 #   auth_user_id: "agent-bot"                # auth_mode=api_key 时建议配置：绑定固定身份，
 #                                            # 忽略客户端 X-User-ID（防止同一密钥持有者互相冒充）
+#   rate_limit:
+#     requests_per_minute: 10                # 每用户每分钟最大 API 请求数（默认 10；<= 0 不限流）
+#     burst: 10                              # 突发容量（默认等于 requests_per_minute）
 
 # ────────────────────────────────────────────────────────────
 # 搜索引擎配置（web_search 工具）

@@ -312,6 +312,17 @@ type ServerConfig struct {
 	// AuthUserID auth_mode 为 api_key 时绑定的固定用户身份（建议配置）：
 	// 非空时忽略客户端的 X-User-ID，防止同一密钥持有者互相冒充
 	AuthUserID string `yaml:"auth_user_id"`
+
+	// RateLimit HTTP 层 per-user 请求限流（默认 10 次/分钟）
+	RateLimit RateLimitYAML `yaml:"rate_limit"`
+}
+
+// RateLimitYAML HTTP 限流 YAML 配置。
+type RateLimitYAML struct {
+	// RequestsPerMinute 每用户每分钟最大请求数（默认 10；<= 0 不限流）
+	RequestsPerMinute int `yaml:"requests_per_minute"`
+	// Burst 突发容量（默认等于 requests_per_minute）
+	Burst int `yaml:"burst"`
 }
 
 // SandboxConfig 工具执行沙箱配置（对应 internal/sandbox 包）。
@@ -612,6 +623,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Server.AuthMode == "" {
 		c.Server.AuthMode = "header"
+	}
+	if c.Server.RateLimit.RequestsPerMinute == 0 {
+		c.Server.RateLimit.RequestsPerMinute = 10
+	}
+	if c.Server.RateLimit.Burst == 0 {
+		c.Server.RateLimit.Burst = c.Server.RateLimit.RequestsPerMinute
 	}
 	if c.Session.MaxSessions == 0 {
 		c.Session.MaxSessions = 1000
