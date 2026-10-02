@@ -19,6 +19,7 @@ import (
 	"github.com/wenruigao/tommy-catty/config"
 	"github.com/wenruigao/tommy-catty/internal/bootstrap"
 	"github.com/wenruigao/tommy-catty/internal/channel"
+	"github.com/wenruigao/tommy-catty/internal/logger"
 	"github.com/wenruigao/tommy-catty/internal/ctxmgr"
 	"github.com/wenruigao/tommy-catty/internal/engine"
 	"github.com/wenruigao/tommy-catty/internal/llm"
@@ -45,6 +46,13 @@ func main() {
 		fmt.Printf("  ⚠️  配置文件加载失败 (%v)，使用默认配置\n", err)
 		cfg = config.Default()
 	}
+
+	// 初始化结构化日志（log/slog）
+	logger.Init(logger.Config{
+		Format: cfg.Log.Format,
+		Level:  cfg.Log.Level,
+		Output: cfg.Log.Output,
+	})
 
 	// 初始化 LLM 网关
 	gwCfg := cfg.ToGatewayConfig()
@@ -277,9 +285,10 @@ func main() {
 	}
 
 	smCfg := session.ManagerConfig{
-		MaxSessions:     cfg.Session.MaxSessions,
-		SessionTTL:      cfg.SessionTTLDuration(),
-		CleanupInterval: cfg.SessionCleanupDuration(),
+		MaxSessions:       cfg.Session.MaxSessions,
+		SessionTTL:        cfg.SessionTTLDuration(),
+		CleanupInterval:   cfg.SessionCleanupDuration(),
+		MaxConcurrentRuns: cfg.Session.MaxConcurrentRuns,
 	}
 	sessionMgr := session.NewSessionManager(smCfg, deps)
 	defer sessionMgr.Shutdown()
@@ -287,8 +296,9 @@ func main() {
 	// 构建 HTTP 路由
 	mux := http.NewServeMux()
 	handler := server.NewHandler(sessionMgr)
-	handler.Meter = gateway.Meter() // /api/v1/usage 用量端点数据源（网关全局口径）
-	handler.SecEngine = secEngine   // task_end 成本评估（cost-guard）
+	handler.Meter = gateway.Meter()              // /api/v1/usage 用量端点数据源（网关全局口径）
+	handler.SecEngine = secEngine                // task_end 成本评估（cost-guard）
+	handler.RequestTimeout = cfg.RequestTimeoutDuration() // 单次 chat 请求超时（默认 120s）
 	handler.RegisterRoutes(mux)
 
 	// 包装认证中间件（api_key / jwt 模式必须配置密钥，缺失时拒绝启动）

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -116,8 +116,11 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.connected = true
 	c.mu.Unlock()
 
-	log.Printf("[MCP] Connected to %q (%s %s), discovered %d tools",
-		c.cfg.Name, c.serverInfo.Name, c.serverInfo.Version, len(c.tools))
+	slog.Info("MCP 服务已连接",
+		"server", c.cfg.Name,
+		"name", c.serverInfo.Name,
+		"version", c.serverInfo.Version,
+		"tools", len(c.tools))
 
 	return nil
 }

@@ -2,7 +2,7 @@ package memstore
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -148,7 +148,7 @@ func (a *AsyncSQLiteStore) execute(op asyncOp) {
 	if op.done != nil {
 		op.done <- err
 	} else if err != nil {
-		log.Printf("  ⚠️  memstore(async): 后台写入失败: %v", err)
+		slog.Warn("memstore(async): 后台写入失败", "error", err)
 	}
 }
 

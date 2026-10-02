@@ -3,7 +3,7 @@ package memstore
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -110,7 +110,7 @@ func retentionLabel(d time.Duration) string {
 func (t *TieredStore) SaveMemory(ctx context.Context, entry memory.MemoryEntry) error {
 	if t.remote != nil {
 		if err := t.remote.SaveMemory(ctx, entry); err != nil {
-			log.Printf("  ⚠️  memstore: 远端层写入失败（本地层不受影响）: %v", err)
+			slog.Warn("memstore: 远端层写入失败", "layer", "remote", "error", err)
 		}
 	}
 	// sqlite 异步写入（fire-and-forget，错误由 worker 日志记录）
@@ -129,7 +129,7 @@ func (t *TieredStore) RecentMemories(ctx context.Context, userID string, limit i
 		if entries, err := t.remote.RecentMemories(ctx, userID, limit); err == nil {
 			return entries, nil
 		} else {
-			log.Printf("  ⚠️  memstore: 远端读取失败，回退本地层: %v", err)
+			slog.Warn("memstore: 远端读取失败，回退本地层", "error", err)
 		}
 	}
 	if entries, err := t.sqlite.RecentMemories(ctx, userID, limit); err == nil {
@@ -144,7 +144,7 @@ func (t *TieredStore) SearchMemories(ctx context.Context, userID, query string, 
 		if entries, err := t.remote.SearchMemories(ctx, userID, query, topK); err == nil {
 			return entries, nil
 		} else {
-			log.Printf("  ⚠️  memstore: 远端检索失败，回退本地层: %v", err)
+			slog.Warn("memstore: 远端检索失败，回退本地层", "error", err)
 		}
 	}
 	if entries, err := t.sqlite.SearchMemories(ctx, userID, query, topK); err == nil {
@@ -158,7 +158,7 @@ func (t *TieredStore) DeleteMemories(ctx context.Context, userID string) error {
 	var firstErr error
 	if t.remote != nil {
 		if err := t.remote.DeleteMemories(ctx, userID); err != nil {
-			log.Printf("  ⚠️  memstore: 远端层清空失败: %v", err)
+			slog.Warn("memstore: 远端层清空失败", "error", err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -175,12 +175,12 @@ func (t *TieredStore) DeleteMemories(ctx context.Context, userID string) error {
 func (t *TieredStore) SaveProfile(ctx context.Context, userID, content string) error {
 	if t.remote != nil {
 		if err := t.remote.SaveProfile(ctx, userID, content); err != nil {
-			log.Printf("  ⚠️  memstore: 远端层画像写入失败: %v", err)
+			slog.Warn("memstore: 远端画像写入失败", "layer", "remote", "error", err)
 		}
 	}
 	_ = t.sqlite.SaveProfile(ctx, userID, content) // 异步
 	if err := t.file.SaveProfile(ctx, userID, content); err != nil {
-		log.Printf("  ⚠️  memstore: 本地文件层画像写入失败: %v", err)
+		slog.Warn("memstore: 本地文件层画像写入失败", "error", err)
 	}
 	return nil
 }
@@ -218,7 +218,7 @@ func (t *TieredStore) startup(ctx context.Context) {
 	if t.remote != nil {
 		for _, uid := range users {
 			if err := t.backfillUser(ctx, uid); err != nil {
-				log.Printf("  ⚠️  memstore: 用户 %s 远端回迁失败（下次启动重试，保留本地全量）: %v", uid, err)
+				slog.Warn("memstore: 远端回迁失败，下次启动重试", "user", uid, "error", err)
 			}
 		}
 	}
@@ -256,7 +256,7 @@ func (t *TieredStore) backfillUser(ctx context.Context, userID string) error {
 	if err := t.sqlite.SetMetaSync(ctx, userID, metaRemoteSynced, "1"); err != nil {
 		return err
 	}
-	log.Printf("  ✅ memstore: 用户 %s 已回迁 %d 条记忆到远端", userID, len(entries))
+	slog.Info("memstore: 回迁完成", "user", userID, "count", len(entries))
 	return nil
 }
 
@@ -312,7 +312,7 @@ func (t *TieredStore) localUsers(ctx context.Context) []string {
 			}
 		}
 	} else {
-		log.Printf("  ⚠️  memstore: 枚举本地用户失败: %v", err)
+		slog.Warn("memstore: 枚举本地用户失败", "error", err)
 	}
 	for _, id := range t.fileUsers() {
 		if !seen[id] {
@@ -332,14 +332,19 @@ func (t *TieredStore) pruneUser(ctx context.Context, userID string) {
 	now := time.Now()
 	if t.sqliteRetention > 0 {
 		if err := t.sqlite.PruneBefore(ctx, userID, now.Add(-t.sqliteRetention)); err != nil {
-			log.Printf("  ⚠️  memstore: sqlite 层修剪失败: %v", err)
+			slog.Warn("memstore: sqlite 层修剪失败", "error", err)
 		}
 	}
 	if t.fileRetention > 0 {
 		if err := t.file.PruneBefore(ctx, userID, now.Add(-t.fileRetention)); err != nil {
-			log.Printf("  ⚠️  memstore: file 层修剪失败: %v", err)
+			slog.Warn("memstore: file 层修剪失败", "error", err)
 		}
 	}
+}
+
+// Flush 等待 sqlite 异步写队列排空（屏障语义，用于测试和关闭前确认）。
+func (t *TieredStore) Flush() error {
+	return t.sqlite.Flush()
 }
 
 // fileUsers 扫描 file 层 JSONL 目录，返回存在记忆文件的用户 ID。

@@ -16,14 +16,17 @@ type ManagerConfig struct {
 	SessionTTL time.Duration
 	// CleanupInterval 过期扫描间隔（默认 5min）
 	CleanupInterval time.Duration
+	// MaxConcurrentRuns 全局最大并发执行数（默认 10；<= 0 不限）
+	MaxConcurrentRuns int
 }
 
 // DefaultManagerConfig 返回默认的 SessionManager 配置。
 func DefaultManagerConfig() ManagerConfig {
 	return ManagerConfig{
-		MaxSessions:     1000,
-		SessionTTL:      30 * time.Minute,
-		CleanupInterval: 5 * time.Minute,
+		MaxSessions:       1000,
+		SessionTTL:        30 * time.Minute,
+		CleanupInterval:   5 * time.Minute,
+		MaxConcurrentRuns: 10,
 	}
 }
 
@@ -47,6 +50,11 @@ func NewSessionManager(cfg ManagerConfig, deps SessionDeps) *SessionManager {
 	}
 	if cfg.CleanupInterval <= 0 {
 		cfg.CleanupInterval = 5 * time.Minute
+	}
+
+	// 全局并发信号量：限制同时执行的 Run() 数量，防止 LLM 调用过载
+	if cfg.MaxConcurrentRuns > 0 && deps.ConcurrencySem == nil {
+		deps.ConcurrencySem = make(chan struct{}, cfg.MaxConcurrentRuns)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

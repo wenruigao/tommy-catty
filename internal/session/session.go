@@ -5,7 +5,7 @@ package session
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -19,8 +19,11 @@ import (
 	"github.com/wenruigao/tommy-catty/internal/trace"
 )
 
-// ErrRateLimited 当用户请求被限流时返回此错误。
+// ErrRateLimited 当用户请求被限流时返回此错误（HTTP 层频率限流或全局并发限流）。
 var ErrRateLimited = errors.New("rate limit exceeded, please try again later")
+
+// ErrConcurrencyLimited 当全局并发执行数达到上限时返回此错误。
+var ErrConcurrencyLimited = errors.New("too many concurrent requests, please try again later")
 
 // UserSession 封装单个用户的全部有状态组件。
 // 同一用户的请求通过 mu 串行执行；不同用户之间无共享指针，天然并行安全。
@@ -33,7 +36,7 @@ type UserSession struct {
 	memory         *memory.CombinedMemory
 	ctxManager     *ctxmgr.Manager
 	tracer         *trace.Tracer
-	limiter        *RateLimiter
+	sem            chan struct{}                       // 全局并发信号量（nil 不限）
 	exporter       *trace.Exporter                     // 可为 nil
 	profiler       *UserProfiler                       // 可为 nil（禁用用户画像生成）
 	skillHint      func(input string) string           // 可为 nil
@@ -53,6 +56,9 @@ type SessionDeps struct {
 	CtxConfig     ctxmgr.Config
 	Summarizer    ctxmgr.Summarizer // 可为 nil
 	RateLimit     RateLimitConfig
+	// ConcurrencySem 全局并发信号量（buffered channel，容量 = 最大并发执行数）。
+	// nil 表示不限并发。由 SessionManager 创建并共享给所有 UserSession。
+	ConcurrencySem chan struct{}
 	// Reflection 反思配置（nil 则禁用反思）
 	Reflection *engine.ReflectionConfig
 	// ToolGate 工具调用安全门禁（nil 则不检查）。
@@ -133,7 +139,7 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 				})
 			}
 		} else {
-			log.Printf("  ⚠️  session: 用户 %s 记忆预热失败: %v", userID, err)
+			slog.Warn("session: 记忆预热失败", "user", userID, "error", err)
 		}
 		// 加载用户画像（store 优先，失败回退本地文件；均无则视为新用户）
 		_ = loadUserProfileVia(deps.MemStore, deps.UserProfilesDir, userID)
@@ -199,7 +205,7 @@ func NewUserSession(userID string, deps SessionDeps) *UserSession {
 		memory:         combined,
 		ctxManager:     ctxMgr,
 		tracer:         tracer,
-		limiter:        NewRateLimiter(deps.RateLimit),
+		sem:            deps.ConcurrencySem,
 		exporter:       deps.TraceExporter,
 		profiler:       deps.Profiler,
 		skillHint:      deps.SkillHintProvider,
@@ -214,10 +220,19 @@ func (s *UserSession) Run(ctx context.Context, goal string) (*engine.ExecutionTr
 
 	s.LastActive = time.Now()
 
-	// 限流检查（per-user 滑动窗口）
-	if !s.limiter.Allow() {
-		metrics.SessionRateLimited().Add(1)
-		return nil, ErrRateLimited
+	// 全局并发控制：获取信号量（频率限流已由 HTTP 层 RateLimitMiddleware 承担）
+	if s.sem != nil {
+		select {
+		case s.sem <- struct{}{}:
+			defer func() { <-s.sem }()
+		case <-ctx.Done():
+			metrics.SessionRateLimited().Add(1)
+			return nil, ErrConcurrencyLimited
+		default:
+			// 非阻塞尝试：信号量满则立即拒绝（避免排队堆积）
+			metrics.SessionRateLimited().Add(1)
+			return nil, ErrConcurrencyLimited
+		}
 	}
 
 	// 输入层防御：剥离用户输入中的注入指令短语（不只标记）

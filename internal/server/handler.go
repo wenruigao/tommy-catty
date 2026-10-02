@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -21,6 +22,9 @@ type Handler struct {
 
 	// SecEngine 安全策略引擎，任务完成后评估 task_end 检查点（携带 Cost，供 cost-guard）；nil 则跳过
 	SecEngine *security.Engine
+
+	// RequestTimeout 单次 chat 请求的最大执行时间（默认 120s；<= 0 不限）
+	RequestTimeout time.Duration
 }
 
 // NewHandler 创建 HTTP handler。
@@ -86,11 +90,23 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 请求级超时：防止单次 LLM 调用占满连接
+	ctx := r.Context()
+	if h.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, h.RequestTimeout)
+		defer cancel()
+	}
+
 	sess := h.SessionMgr.GetOrCreate(userID)
-	result, err := sess.Run(r.Context(), req.Message)
+	result, err := sess.Run(ctx, req.Message)
 	if err != nil {
-		if err == session.ErrRateLimited {
-			writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: "rate limit exceeded"})
+		if err == session.ErrRateLimited || err == session.ErrConcurrencyLimited {
+			writeJSON(w, http.StatusTooManyRequests, errorResponse{Error: err.Error()})
+			return
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			writeJSON(w, http.StatusGatewayTimeout, errorResponse{Error: "request timeout"})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})

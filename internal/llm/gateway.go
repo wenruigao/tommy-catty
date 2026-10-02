@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"sort"
 	"sync"
@@ -145,10 +145,14 @@ func NewGatewayWithRetry(policy RetryPolicy, cbConfig CircuitBreakerConfig) *Gat
 
 	// 注册默认日志钩子 + 指标上报
 	executor.AddHook(func(event RetryEvent) {
-		log.Printf("[RETRY] provider=%s attempt=%d/%d category=%v backoff=%s circuit=%s err=%v",
-			event.Provider, event.Attempt, event.MaxRetries,
-			event.Category, event.Backoff.Round(time.Millisecond),
-			event.CircuitState, event.Error)
+		slog.Warn("LLM 重试",
+			"provider", event.Provider,
+			"attempt", event.Attempt,
+			"max_retries", event.MaxRetries,
+			"category", event.Category,
+			"backoff", event.Backoff.Round(time.Millisecond),
+			"circuit", event.CircuitState,
+			"error", event.Error)
 		// ★ 指标上报：重试次数 + 熔断器状态
 		metrics.LLMRetries().With(map[string]string{"provider": event.Provider}).Add(1)
 		metrics.LLMCircuitState().With(map[string]string{"provider": event.Provider}).Set(float64(event.CircuitState))
@@ -447,7 +451,7 @@ func (g *Gateway) afterChatSuccess(req ChatRequest, resp ChatResponse) {
 			}
 			g.mu.Unlock()
 			if first {
-				log.Printf("[METER] 预警: 日 Token 用量已达预算 80%%（%d/%d）", used, limit)
+				slog.Warn("日 Token 用量已达预算 80%", "used", used, "limit", limit)
 			}
 		}
 	}

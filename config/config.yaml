@@ -8,6 +8,14 @@
 #   直接写:   api_key: "sk-xxx"
 #   环境变量: api_key: "${DEEPSEEK_API_KEY}"
 
+# ────────────────────────────────────────────────────────────
+# 结构化日志（log/slog）
+# ────────────────────────────────────────────────────────────
+# log:
+#   format: "text"       # text（人类可读，默认）| json（机器采集）
+#   level: "info"        # debug | info（默认）| warn | error
+#   output: "stdout"     # stdout（默认）| stderr | 文件路径
+
 llm:
   # 默认供应商（未指定 model 时使用）
   default_provider: "mimo"
@@ -138,6 +146,7 @@ engine:
 #   rate_limit:
 #     requests_per_minute: 10                # 每用户每分钟最大 API 请求数（默认 10；<= 0 不限流）
 #     burst: 10                              # 突发容量（默认等于 requests_per_minute）
+#   request_timeout: "120s"                  # 单次 chat 请求最大执行时间（默认 120s；超时返回 504）
 
 # ────────────────────────────────────────────────────────────
 # 搜索引擎配置（web_search 工具）
@@ -152,6 +161,7 @@ search:
 # ────────────────────────────────────────────────────────
 session:
   requests_per_minute: 30        # 每用户每分钟最大请求数（per-user 滑动窗口限流；0 表示不限流）
+  max_concurrent_runs: 10        # 全局最大并发执行数（防止 LLM 调用过载；<= 0 不限）
 
 # 安全审计日志（JSONL 追加写）：记录 L2+ 工具调用与所有命中策略的决策，
 # 含操作人（user_id）、检查点、输入内容，保证审批决策可追溯；留空则禁用审计

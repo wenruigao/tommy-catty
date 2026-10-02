@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -204,7 +204,7 @@ func (o *Orchestrator) schedule(ctx context.Context, plan *Plan, bb *Blackboard,
 					o.toolReg, o.toolGate, o.tracer,
 				)
 				if err != nil {
-					log.Printf("  ⚠️  multiagent: Worker %s 创建失败: %v", workerID, err)
+					slog.Warn("multiagent: Worker 创建失败", "worker", workerID, "error", err)
 					sr := &SubTaskResult{
 						SubTaskID: st.ID,
 						Role:      st.Role,

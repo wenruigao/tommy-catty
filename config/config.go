@@ -35,6 +35,9 @@ type Config struct {
 	// 工作目录（文件操作沙箱范围）
 	WorkDir string `yaml:"work_dir"`
 
+	// Log 结构化日志配置（log/slog）
+	Log LogConfig `yaml:"log"`
+
 	// Sandbox 工具执行沙箱配置（shell_exec / code_run 的 OS 级执行隔离）；
 	// 未配置时 type=none，与旧行为保持一致（仅进程组隔离）
 	Sandbox SandboxConfig `yaml:"sandbox"`
@@ -315,6 +318,9 @@ type ServerConfig struct {
 
 	// RateLimit HTTP 层 per-user 请求限流（默认 10 次/分钟）
 	RateLimit RateLimitYAML `yaml:"rate_limit"`
+
+	// RequestTimeout 单次 chat 请求最大执行时间（如 "120s"，默认 120s；<= 0 不限）
+	RequestTimeout string `yaml:"request_timeout"`
 }
 
 // RateLimitYAML HTTP 限流 YAML 配置。
@@ -323,6 +329,16 @@ type RateLimitYAML struct {
 	RequestsPerMinute int `yaml:"requests_per_minute"`
 	// Burst 突发容量（默认等于 requests_per_minute）
 	Burst int `yaml:"burst"`
+}
+
+// LogConfig 结构化日志配置（对应 internal/logger 包）。
+type LogConfig struct {
+	// Format 输出格式："text"（默认，人类可读）| "json"（机器采集）
+	Format string `yaml:"format"`
+	// Level 最低日志级别："debug" | "info"（默认）| "warn" | "error"
+	Level string `yaml:"level"`
+	// Output 输出目标："stdout"（默认）| "stderr" | 文件路径
+	Output string `yaml:"output"`
 }
 
 // SandboxConfig 工具执行沙箱配置（对应 internal/sandbox 包）。
@@ -492,8 +508,11 @@ type SessionConfig struct {
 	// CleanupInterval 过期扫描间隔（如 "5m"，默认 5 分钟）
 	CleanupInterval string `yaml:"cleanup_interval"`
 
-	// RequestsPerMinute 每用户每分钟最大请求数（0 表示不限流）
+	// RequestsPerMinute 每用户每分钟最大请求数（0 表示不限流；HTTP 模式下由 server.rate_limit 接管）
 	RequestsPerMinute int `yaml:"requests_per_minute"`
+
+	// MaxConcurrentRuns 全局最大并发执行数（默认 10；<= 0 不限）
+	MaxConcurrentRuns int `yaml:"max_concurrent_runs"`
 }
 
 // MultiAgentConfig 多 Agent 协作配置（Orchestrator-Worker 模式）。
@@ -646,6 +665,9 @@ func (c *Config) applyDefaults() {
 		// 默认启用 per-user 限流 30 次/分钟（与安全设计的"每会话限流"口径一致，
 		// 0 表示不限流会让 per-user 限流实际关闭）
 		c.Session.RequestsPerMinute = 30
+	}
+	if c.Session.MaxConcurrentRuns == 0 {
+		c.Session.MaxConcurrentRuns = 10
 	}
 	if c.Search.DefaultEngine == "" {
 		c.Search.DefaultEngine = "duckduckgo"
@@ -907,6 +929,16 @@ func (c *Config) SessionCleanupDuration() time.Duration {
 		return d
 	}
 	return 5 * time.Minute
+}
+
+// RequestTimeoutDuration 解析单次 chat 请求超时，解析失败时返回 120 秒。
+func (c *Config) RequestTimeoutDuration() time.Duration {
+	if c.Server.RequestTimeout != "" {
+		if d, err := time.ParseDuration(c.Server.RequestTimeout); err == nil {
+			return d
+		}
+	}
+	return 120 * time.Second
 }
 
 // MultiAgentWorkerTimeout 解析 Worker 执行超时，解析失败时返回 120 秒。

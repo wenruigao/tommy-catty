@@ -42,6 +42,7 @@ func TestTieredStoreNoRemoteRetention(t *testing.T) {
 			t.Fatalf("SaveMemory(%s): %v", e.ID, err)
 		}
 	}
+	store.Flush() // 等待异步 sqlite 写入落盘
 
 	// sqlite 层全量：4 条
 	fromSQLite, err := store.sqlite.RecentMemories(ctx, "u1", 100)
@@ -97,6 +98,7 @@ func TestTieredStoreWithRemoteBackfill(t *testing.T) {
 		t.Fatalf("OpenTiered(B): %v", err)
 	}
 	defer second.Close()
+	second.Flush() // 等待启动修剪的异步写入落盘
 
 	// 远端拿到全量 4 条 + 画像
 	remoteEntries, err := backend.RecentMemories(ctx, "u1", 100)
@@ -198,10 +200,11 @@ func TestTieredReadFallbackWhenRemoteDown(t *testing.T) {
 	if err := store.SaveMemory(ctx, memory.MemoryEntry{ID: "m1", UserID: "u1", Content: "测试内容", Tags: []string{"user"}, Timestamp: time.Now()}); err != nil {
 		t.Fatalf("SaveMemory: %v", err)
 	}
-	if err := store.sqlite.SetMeta(ctx, "u1", metaRemoteSynced, "1"); err != nil {
+	if err := store.sqlite.SetMetaSync(ctx, "u1", metaRemoteSynced, "1"); err != nil {
 		t.Fatalf("SetMeta: %v", err)
 	}
-	srv.Close() // 远端宕机
+	store.Flush() // 确保异步写入落盘
+	srv.Close()   // 远端宕机
 
 	got, err := store.RecentMemories(ctx, "u1", 10)
 	if err != nil || len(got) != 1 {

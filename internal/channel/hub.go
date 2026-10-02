@@ -5,7 +5,7 @@ package channel
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -118,13 +118,13 @@ func (h *Hub) Start(ctx context.Context) error {
 	for name, ch := range h.channels {
 		in := make(chan InboundMessage, h.cfg.QueueSize)
 		if err := ch.Start(ctx, in); err != nil {
-			log.Printf("警告: 渠道 %q 启动失败，已降级跳过: %v", name, err)
+			slog.Warn("渠道启动失败，已降级跳过", "channel", name, "error", err)
 			continue
 		}
 		h.wg.Add(1)
 		go h.consume(name, in)
 		started++
-		log.Printf("渠道 %q 已启动", name)
+		slog.Info("渠道已启动", "channel", name)
 	}
 	if started == 0 {
 		return errors.New("channel: 没有任何渠道成功启动")
@@ -139,7 +139,7 @@ func (h *Hub) Stop() {
 	h.mu.RLock()
 	for name, ch := range h.channels {
 		if err := ch.Stop(); err != nil {
-			log.Printf("警告: 渠道 %q 停止出错: %v", name, err)
+			slog.Warn("渠道停止出错", "channel", name, "error", err)
 		}
 	}
 	h.mu.RUnlock()
@@ -186,12 +186,12 @@ func (h *Hub) Dispatch(name string, msg InboundMessage) {
 	}
 	metrics.ChannelMessages().With(map[string]string{"channel": name, "status": "received"}).Add(1)
 	if h.isDuplicate(name, msg.MessageID) {
-		log.Printf("渠道 %q 丢弃重复消息 %q（平台重推/回调重试）", name, msg.MessageID)
+		slog.Info("渠道丢弃重复消息", "channel", name, "message_id", msg.MessageID)
 		metrics.ChannelMessages().With(map[string]string{"channel": name, "status": "dedup"}).Add(1)
 		return
 	}
 	if !userAllowed(cc.AllowUsers, msg.UserID) {
-		log.Printf("渠道 %q 拒绝未授权用户 %q", name, msg.UserID)
+		slog.Warn("渠道拒绝未授权用户", "channel", name, "user", msg.UserID)
 		return
 	}
 	if msg.ChatType == ChatTypeGroup && cc.GroupMode == GroupModeNever {
@@ -231,7 +231,7 @@ func (h *Hub) execute(name string, msg InboundMessage, sessionKey string, timeou
 		reply = "请求过于频繁，请稍后再试（渠道限流）"
 		metrics.ChannelMessages().With(map[string]string{"channel": name, "status": "failed"}).Add(1)
 	case err != nil:
-		log.Printf("渠道 %q 任务执行失败（会话 %s）: %v", name, sessionKey, err)
+		slog.Error("渠道任务执行失败", "channel", name, "session", sessionKey, "error", err)
 		reply = "任务执行失败或被安全策略拦截，请检查输入内容或联系管理员"
 		metrics.ChannelMessages().With(map[string]string{"channel": name, "status": "failed"}).Add(1)
 	default:
@@ -281,7 +281,7 @@ func (h *Hub) deliver(channelName string, msg OutboundMessage) {
 		m := msg
 		m.Text = part
 		if err := h.sendWithRetry(ch, m); err != nil {
-			log.Printf("警告: 渠道 %q 投递最终失败（会话 %s）: %v", channelName, msg.ChatID, err)
+			slog.Error("渠道投递最终失败", "channel", channelName, "chat_id", msg.ChatID, "error", err)
 			metrics.ChannelDelivery().With(map[string]string{"channel": channelName, "status": "failed"}).Add(1)
 		} else {
 			metrics.ChannelDelivery().With(map[string]string{"channel": channelName, "status": "success"}).Add(1)
