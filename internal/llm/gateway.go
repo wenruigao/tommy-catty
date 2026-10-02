@@ -109,9 +109,10 @@ func (c *CircuitBreakerYAMLConfig) ToConfig() CircuitBreakerConfig {
 // CacheYAMLConfig YAML 可序列化的语义缓存配置（L1 精确哈希层）。
 // L2 向量相似层依赖 embedding 模型，属 P2 阶段，暂未实现。
 type CacheYAMLConfig struct {
-	Enabled  bool   `yaml:"enabled"`  // 为 true 时才启用语义缓存
-	Capacity int    `yaml:"capacity"` // 缓存条目容量（默认 500）
-	TTL      string `yaml:"ttl"`      // 过期时间，如 "10m"（默认 10 分钟）
+	Enabled  bool   `yaml:"enabled"`   // 为 true 时才启用语义缓存
+	Capacity int    `yaml:"capacity"`  // 缓存条目容量（默认 500）
+	TTL      string `yaml:"ttl"`       // 过期时间，如 "10m"（默认 10 分钟）
+	MaxBytes int64  `yaml:"max_bytes"` // 字节预算上限（默认 50MB；<= 0 不限）
 }
 
 // MeterYAMLConfig YAML 可序列化的 Token 计量/预算配置。
@@ -198,7 +199,11 @@ func NewGatewayFromConfig(cfg GatewayConfig) *Gateway {
 				ttl = d
 			}
 		}
-		gw.cache = NewSemanticCache(cfg.Cache.Capacity, ttl)
+		maxBytes := cfg.Cache.MaxBytes
+		if maxBytes == 0 {
+			maxBytes = 50 * 1024 * 1024 // 默认 50MB
+		}
+		gw.cache = NewSemanticCache(cfg.Cache.Capacity, ttl, maxBytes)
 	}
 
 	// Token 计量：始终启用（未配置预算时仅做用量汇总，供 /api/v1/usage 暴露）

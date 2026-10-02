@@ -62,7 +62,7 @@ func TestGateway_CacheHitAndMeter(t *testing.T) {
 		FinishReason: "stop",
 		Usage:        Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 	})
-	gw.SetCache(NewSemanticCache(10, time.Minute))
+	gw.SetCache(NewSemanticCache(10, time.Minute, 0))
 	gw.SetMeter(NewMeter(0))
 
 	req := ChatRequest{Messages: []Message{{Role: "user", Content: "hello"}}}
@@ -82,7 +82,7 @@ func TestGateway_CacheHitAndMeter(t *testing.T) {
 	if got := gw.Meter().Summary().TotalTokens; got != 15 {
 		t.Errorf("meter total tokens: got %d, want 15", got)
 	}
-	hits, _, _ := gw.Cache().Stats()
+	hits, _, _, _, _ := gw.Cache().Stats()
 	if hits != 1 {
 		t.Errorf("cache hits: got %d, want 1", hits)
 	}
@@ -95,7 +95,7 @@ func TestGateway_ToolCallResponseNotCached(t *testing.T) {
 		FinishReason: "tool_calls",
 		ToolCalls:    []ToolCall{{Name: "shell_exec"}},
 	})
-	gw.SetCache(NewSemanticCache(10, time.Minute))
+	gw.SetCache(NewSemanticCache(10, time.Minute, 0))
 
 	req := ChatRequest{Messages: []Message{{Role: "user", Content: "run it"}}}
 	for i := 0; i < 2; i++ {
