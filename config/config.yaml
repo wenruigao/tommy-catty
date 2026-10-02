@@ -158,6 +158,33 @@ skill_store_path: "data/skills.json"
 work_dir: "."
 
 # ────────────────────────────────────────────────────────────
+# 工具执行沙箱（shell_exec / code_run 的 OS 级隔离；可选）
+# ────────────────────────────────────────────────────────────
+# 未配置或 type=none 时与旧行为一致（仅独立进程组 + 超时按进程组整树终止）。
+# 三档实现：
+#   none      直通模式（默认）
+#   native    OS 原生沙箱：Linux 非特权用户命名空间（user/pid/net/ipc/uts +
+#             rlimit + 独立 tmpfs /tmp）；macOS sandbox-exec（Seatbelt）
+#   container docker/podman 容器：只读根文件系统 + 禁网 + 资源限额 + 全能力裁剪
+#
+# sandbox:
+#   type: none              # none | native | container
+#   allow_net: false        # 沙箱内是否允许访问网络（默认禁网；联网需求走 web_search/web_fetch）
+#   timeout_seconds: 30     # 覆盖 shell_exec / code_run 的注册超时（秒）
+#   memory_limit_mb: 512    # 内存上限（native: RLIMIT_AS；container: --memory）
+#   cpu_limit_seconds: 10   # CPU 时间上限（native: RLIMIT_CPU；container 按 CPU/墙钟比换算 --cpus）
+#   max_processes: 64       # 进程数上限（仅 container 的 --pids-limit 生效；native 不设
+#                           # RLIMIT_NPROC——它按宿主真实 UID 统计，多进程机器会误伤）
+#   on_unavailable: degrade # 沙箱不可用时：degrade=降级为 none 并告警；error=拒绝启动
+#   container:
+#     runtime: docker       # docker | podman（缺省自动探测）
+#     image: "ubuntu:24.04" # 镜像需包含要执行的解释器（python3/go），
+#                           # ubuntu:24.04 仅含基础 shell 工具；type=container 时必填
+#     tmpfs_size_mb: 64     # 容器内 /tmp tmpfs 容量（根文件系统只读，临时写入落 /tmp）
+#     user: ""              # 容器内运行用户（如 "1000:1000"）；缺省用镜像默认用户，
+#                           # 非 root 用户可能因宿主目录属主无写权限导致工作目录写入失败
+
+# ────────────────────────────────────────────────────────────
 # Agent 人格体系（agent.md / soul.md / 用户画像）
 # ────────────────────────────────────────────────────────────
 # agent.md 定义 Agent 的职责与权限边界（最高优先级，用户指令不得覆盖）；

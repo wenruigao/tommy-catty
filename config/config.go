@@ -9,6 +9,7 @@ import (
 
 	"github.com/wenruigao/tommy-catty/internal/engine"
 	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/sandbox"
 	"github.com/wenruigao/tommy-catty/internal/search"
 	"gopkg.in/yaml.v3"
 )
@@ -33,6 +34,10 @@ type Config struct {
 
 	// 工作目录（文件操作沙箱范围）
 	WorkDir string `yaml:"work_dir"`
+
+	// Sandbox 工具执行沙箱配置（shell_exec / code_run 的 OS 级执行隔离）；
+	// 未配置时 type=none，与旧行为保持一致（仅进程组隔离）
+	Sandbox SandboxConfig `yaml:"sandbox"`
 
 	// HTTP 服务配置（多用户模式）
 	Server ServerConfig `yaml:"server"`
@@ -307,6 +312,58 @@ type ServerConfig struct {
 	// AuthUserID auth_mode 为 api_key 时绑定的固定用户身份（建议配置）：
 	// 非空时忽略客户端的 X-User-ID，防止同一密钥持有者互相冒充
 	AuthUserID string `yaml:"auth_user_id"`
+}
+
+// SandboxConfig 工具执行沙箱配置（对应 internal/sandbox 包）。
+// 面向 shell_exec / code_run 等高危工具，提供 OS 级执行隔离；
+// type=none（默认）时仅保留进程组隔离与组杀修复，行为与旧版一致。
+type SandboxConfig struct {
+	// Type 沙箱类型：none（直通，默认）| native（OS 原生沙箱：
+	// Linux 命名空间 / macOS sandbox-exec）| container（docker/podman 容器）
+	Type string `yaml:"type"`
+
+	// WorkDir 沙箱工作目录根（native/container 模式的文件读写范围，缺省继承顶层 work_dir）
+	WorkDir string `yaml:"work_dir"`
+
+	// AllowNet 是否允许沙箱内进程访问网络（默认 false 禁网；
+	// native-linux 经独立网络命名空间禁网，container 经 --network none 禁网）
+	AllowNet bool `yaml:"allow_net"`
+
+	// TimeoutSeconds 单次工具执行超时（秒，默认 30），覆盖 shell_exec / code_run 的注册超时
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+
+	// MemoryLimitMB 内存上限 MB（native: RLIMIT_AS；container: --memory，默认 512）
+	MemoryLimitMB int `yaml:"memory_limit_mb"`
+
+	// CPULimitSeconds CPU 时间上限秒（native: RLIMIT_CPU；container 按 CPU/墙钟比换算 --cpus，默认 10）
+	CPULimitSeconds int `yaml:"cpu_limit_seconds"`
+
+	// MaxProcesses 进程数上限（native: RLIMIT_NPROC；container: --pids-limit，默认 64）
+	MaxProcesses int `yaml:"max_processes"`
+
+	// OnUnavailable 沙箱不可用时的行为：degrade（默认，降级为 none 并告警）| error（拒绝启动）
+	OnUnavailable string `yaml:"on_unavailable"`
+
+	// Container 容器沙箱配置（type=container 时生效）
+	Container ContainerSandboxConfig `yaml:"container"`
+}
+
+// ContainerSandboxConfig 容器沙箱的 YAML 配置。
+type ContainerSandboxConfig struct {
+	// Runtime 容器运行时：docker | podman（缺省自动探测，取 PATH 中先命中者）
+	Runtime string `yaml:"runtime"`
+
+	// Image 容器镜像（必填）。注意：镜像需包含要执行的解释器
+	//（如 python3 / go），默认 ubuntu:24.04 仅含基础 shell 工具
+	Image string `yaml:"image"`
+
+	// TmpfsSizeMB 容器内 /tmp tmpfs 容量 MB（默认 64；根文件系统为只读，
+	// 临时写入统一落在 /tmp）
+	TmpfsSizeMB int `yaml:"tmpfs_size_mb"`
+
+	// User 容器内运行用户（如 "1000:1000"；缺省使用镜像默认用户）。
+	// 注意：非 root 用户可能因宿主机目录属主无写权限导致工作目录写入失败
+	User string `yaml:"user"`
 }
 
 // ChannelEntry 单个 Channel（渠道）的 YAML 配置条目（对应 internal/channel 接入层）。
@@ -610,6 +667,29 @@ func (c *Config) applyDefaults() {
 	if c.Memory.PrewarmCount == 0 {
 		c.Memory.PrewarmCount = 10
 	}
+	// 沙箱默认值：type=none 保持旧行为，其余字段仅在启用沙箱时有意义，
+	// 统一填充避免 internal/sandbox 内部零值分支
+	if c.Sandbox.Type == "" {
+		c.Sandbox.Type = "none"
+	}
+	if c.Sandbox.TimeoutSeconds == 0 {
+		c.Sandbox.TimeoutSeconds = 30
+	}
+	if c.Sandbox.MemoryLimitMB == 0 {
+		c.Sandbox.MemoryLimitMB = 512
+	}
+	if c.Sandbox.CPULimitSeconds == 0 {
+		c.Sandbox.CPULimitSeconds = 10
+	}
+	if c.Sandbox.MaxProcesses == 0 {
+		c.Sandbox.MaxProcesses = 64
+	}
+	if c.Sandbox.OnUnavailable == "" {
+		c.Sandbox.OnUnavailable = "degrade"
+	}
+	// 注意：container.image 不在此处填默认值——type=container 时必须在
+	// config.yaml 显式指定镜像（Validate 强制校验），运行时兜底默认
+	// （ubuntu:24.04）由 internal/sandbox 的 normalize 完成
 }
 
 // resolveEnvVars 解析配置中的 ${ENV_VAR} 引用
@@ -673,6 +753,19 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: default_provider %q not found in providers", c.LLM.DefaultProvider)
 		}
 	}
+	switch c.Sandbox.Type {
+	case "", "none", "native", "container":
+	default:
+		return fmt.Errorf("config: sandbox.type 非法: %q（仅支持 none / native / container）", c.Sandbox.Type)
+	}
+	switch c.Sandbox.OnUnavailable {
+	case "", "degrade", "error":
+	default:
+		return fmt.Errorf("config: sandbox.on_unavailable 非法: %q（仅支持 degrade / error）", c.Sandbox.OnUnavailable)
+	}
+	if c.Sandbox.Type == "container" && c.Sandbox.Container.Image == "" {
+		return fmt.Errorf("config: sandbox.type=container 时必须配置 sandbox.container.image")
+	}
 	for name, ch := range c.Channels {
 		if !ch.Enabled {
 			continue
@@ -727,6 +820,24 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// ToSandbox 转换为 sandbox.Config（internal/sandbox 包独立定义配置结构，
+// 以避免 sandbox → config → engine → tool 的循环依赖）。
+func (s SandboxConfig) ToSandbox() sandbox.Config {
+	return sandbox.Config{
+		AllowNet:        s.AllowNet,
+		TimeoutSeconds:  s.TimeoutSeconds,
+		MemoryLimitMB:   s.MemoryLimitMB,
+		CPULimitSeconds: s.CPULimitSeconds,
+		MaxProcesses:    s.MaxProcesses,
+		Container: sandbox.ContainerConfig{
+			Runtime:     s.Container.Runtime,
+			Image:       s.Container.Image,
+			TmpfsSizeMB: s.Container.TmpfsSizeMB,
+			User:        s.Container.User,
+		},
+	}
 }
 
 // MemoryTimeoutDuration 解析远程记忆后端请求超时，解析失败时返回 3 秒。

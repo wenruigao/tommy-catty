@@ -19,6 +19,7 @@ import (
 	"github.com/wenruigao/tommy-catty/internal/engine"
 	"github.com/wenruigao/tommy-catty/internal/llm"
 	"github.com/wenruigao/tommy-catty/internal/memstore"
+	"github.com/wenruigao/tommy-catty/internal/sandbox"
 	"github.com/wenruigao/tommy-catty/internal/search"
 	"github.com/wenruigao/tommy-catty/internal/security"
 	"github.com/wenruigao/tommy-catty/internal/session"
@@ -54,9 +55,16 @@ func main() {
 	// 初始化 LLM 网关
 	gateway := initLLMGateway(cfg)
 
-	// 初始化工具注册表
+	// 初始化工具注册表（含执行沙箱；error 模式下沙箱不可用则终止启动）
 	registry := tool.NewRegistry()
-	tool.RegisterBuiltinTools(registry, cfg.WorkDir)
+	sbWarnings, sbErr := bootstrap.RegisterBuiltinTools(cfg, registry)
+	if sbErr != nil {
+		fmt.Printf("  ❌ %v\n", sbErr)
+		os.Exit(1)
+	}
+	for _, w := range sbWarnings {
+		fmt.Printf("  ⚠️  %s\n", w)
+	}
 
 	// 初始化搜索工具
 	searchMgr := search.NewManager(cfg.Search)
@@ -500,6 +508,8 @@ func buildDoctorConfig(cfg *config.Config) doctor.DoctorConfig {
 			Model:   entry.Model,
 		}
 	}
+	// 沙箱可用性探测（native/container 模式时 doctor 检查运行环境支持）
+	sb := sandbox.New(cfg.Sandbox.Type, cfg.Sandbox.ToSandbox())
 	return doctor.DoctorConfig{
 		ConfigPath:     "config/config.yaml",
 		PolicyPath:     cfg.PolicyFile,
@@ -509,6 +519,8 @@ func buildDoctorConfig(cfg *config.Config) doctor.DoctorConfig {
 		MemoryType:     cfg.Memory.Storage.Type,
 		MemoryPath:     cfg.Memory.Storage.Path,
 		MemoryURL:      cfg.Memory.Storage.URL,
+		SandboxType:    cfg.Sandbox.Type,
+		SandboxProbe:   sb.Available,
 	}
 }
 

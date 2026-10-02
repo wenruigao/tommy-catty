@@ -31,6 +31,10 @@ type DoctorConfig struct {
 	MemoryType string // file / sqlite / remote
 	MemoryPath string // file/sqlite 后端路径
 	MemoryURL  string // remote 后端地址
+
+	// 执行沙箱信息（sandbox 可用性检查；SandboxProbe 为 nil 时跳过探测）
+	SandboxType  string       // none / native / container
+	SandboxProbe func() error // 沙箱可用性探测闭包
 }
 
 // ProviderCheckInfo 供应商检查信息
@@ -49,8 +53,35 @@ func RegisterAllChecks(d *Doctor, cfg DoctorConfig) {
 	d.AddCheck(checkSkillStore(cfg))
 	d.AddCheck(checkWorkDirectory(cfg))
 	d.AddCheck(checkMemoryStorage(cfg))
+	d.AddCheck(checkSandbox(cfg))
 	d.AddCheck(checkNetwork())
 	d.AddCheck(checkResources())
+}
+
+// checkSandbox 检查工具执行沙箱可用性（native/container 模式时探测环境支持）
+func checkSandbox(cfg DoctorConfig) Check {
+	return Check{
+		Name:     "Tool sandbox",
+		Category: "security",
+		Severity: SeverityWarning,
+		Suggestion: "检查 sandbox 配置与运行环境：container 模式需安装 docker/podman 并预拉取镜像；" +
+			"native 模式依赖 Linux 非特权用户命名空间或 macOS sandbox-exec；" +
+			"不可用时按 sandbox.on_unavailable 策略降级（degrade）或拒绝启动（error）",
+		Run: func(ctx context.Context) (CheckStatus, string) {
+			switch cfg.SandboxType {
+			case "native", "container":
+				if cfg.SandboxProbe == nil {
+					return StatusWarning, "沙箱探测函数未提供，跳过可用性探测"
+				}
+				if err := cfg.SandboxProbe(); err != nil {
+					return StatusWarning, fmt.Sprintf("沙箱 %s 不可用: %v", cfg.SandboxType, err)
+				}
+				return StatusOK, fmt.Sprintf("沙箱 %s 可用", cfg.SandboxType)
+			default:
+				return StatusOK, "沙箱未启用（none 直通模式，仅进程组隔离）"
+			}
+		},
+	}
 }
 
 // checkMemoryStorage 检查记忆存储后端（remote 验证连通性，本地后端验证目录可写）

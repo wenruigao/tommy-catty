@@ -9,11 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/wenruigao/tommy-catty/internal/sandbox"
 )
 
 // ============================================================
@@ -604,22 +605,27 @@ func (t *FileWriteTool) validatePath(path string) error {
 }
 
 // ============================================================
-// CodeRunTool - 代码执行工具（进程组隔离 + 输出截断）
+// CodeRunTool - 代码执行工具（沙箱执行 + 输出截断）
 // ============================================================
 
 // CodeRunTool 在受限子进程中执行 Python 或 Go 代码片段。
-// 安全措施：独立临时目录（执行后清理）+ 独立进程组 + 输出截断 + 环境隔离；
-// 执行超时（墙钟）由注册表统一控制。
+// 安全措施：独立临时目录（执行后清理）+ 沙箱隔离（见 Sandbox 字段）+
+// 输出截断 + 环境隔离；执行超时（墙钟）由注册表统一控制。
 type CodeRunTool struct {
 	// MaxOutputBytes 最大输出字节数（默认 1MB），超出部分会被截断
 	MaxOutputBytes int
+
+	// Sandbox 执行沙箱（internal/sandbox）；nil 时退化为直通模式
+	//（独立进程组 + 组杀终止）。
+	Sandbox sandbox.Sandbox
 }
 
 func (t *CodeRunTool) Name() string { return "code_run" }
 
 func (t *CodeRunTool) Description() string {
 	return "在隔离的子进程中执行 Python 或 Go 代码，返回标准输出和错误输出。" +
-		"隔离措施：独立临时目录（执行后清理）、独立进程组、输出超过上限自动截断（默认 1MB）；" +
+		"隔离措施：独立临时目录（执行后清理）、沙箱执行（" + sandboxName(t.Sandbox) + "）、" +
+		"输出超过上限自动截断（默认 1MB）；" +
 		"执行超时由工具注册表统一控制（默认 30 秒墙钟时间）。"
 }
 
@@ -663,7 +669,7 @@ func (t *CodeRunTool) Execute(ctx context.Context, args map[string]interface{}) 
 	}
 	defer os.RemoveAll(workDir)
 
-	var cmd *exec.Cmd
+	var argv []string
 	var tmpFile string
 
 	switch strings.ToLower(language) {
@@ -672,51 +678,50 @@ func (t *CodeRunTool) Execute(ctx context.Context, args map[string]interface{}) 
 		if err := os.WriteFile(tmpFile, []byte(code), 0600); err != nil {
 			return Result{}, fmt.Errorf("failed to write temp file: %w", err)
 		}
-		cmd = exec.CommandContext(ctx, "python3", "-u", tmpFile)
+		argv = []string{"python3", "-u", tmpFile}
 
 	case "go":
 		tmpFile = filepath.Join(workDir, "main.go")
 		if err := os.WriteFile(tmpFile, []byte(code), 0600); err != nil {
 			return Result{}, fmt.Errorf("failed to write temp file: %w", err)
 		}
-		cmd = exec.CommandContext(ctx, "go", "run", tmpFile)
+		argv = []string{"go", "run", tmpFile}
 
 	default:
 		return Result{}, fmt.Errorf("unsupported language: %s (supported: python, go)", language)
 	}
 
-	// 进程隔离：独立工作目录 + 受限环境变量 + 独立进程组
-	cmd.Dir = workDir
-	cmd.Env = codeRunEnv()
-	cmd.SysProcAttr = resourceLimits()
-
-	// 输出限制
-	stdout := &limitedWriter{limit: maxOutput}
-	stderr := &limitedWriter{limit: maxOutput}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	err = cmd.Run()
+	// 沙箱执行：受限环境变量 + 独立临时工作目录
+	stdout, stderr, runErr := runSandboxed(ctx, t.Sandbox, argv, workDir, codeRunEnv(), maxOutput)
 
 	result := Result{
-		Output: stdout.String(),
+		Output: stdout,
 		Metadata: map[string]interface{}{
 			"language":           language,
-			"exit_ok":            err == nil,
+			"exit_ok":            runErr == nil,
 			"output_limit_bytes": maxOutput,
+			"sandbox":            sandboxName(t.Sandbox),
 		},
 	}
 
-	if err != nil {
-		result.Error = stderr.String()
+	if runErr != nil {
+		result.Error = stderr
 		if result.Error == "" {
-			result.Error = err.Error()
+			result.Error = runErr.Error()
 		}
-	} else if s := stderr.String(); s != "" {
-		result.Metadata["stderr"] = s
+	} else if stderr != "" {
+		result.Metadata["stderr"] = stderr
 	}
 
 	return result, nil
+}
+
+// sandboxName 返回沙箱实现名（nil 视为直通模式），用于工具 Metadata 与描述。
+func sandboxName(sb sandbox.Sandbox) string {
+	if sb == nil {
+		return "none"
+	}
+	return sb.Name()
 }
 
 // codeRunEnv 为代码执行构建受限环境变量。
@@ -736,7 +741,7 @@ func codeRunEnv() []string {
 // ============================================================
 
 // ShellExecTool 在受限环境中执行 shell 命令。
-// 安全防护：命令分段解析 + 危险二进制检测 + 管道/链式命令检查 + 环境隔离。
+// 安全防护：命令分段解析 + 危险二进制检测 + 管道/链式命令检查 + 环境隔离 + 沙箱执行。
 type ShellExecTool struct {
 	// BlockedBinaries 禁止执行的命令/二进制名称（匹配命令第一个 token）
 	BlockedBinaries map[string]bool
@@ -745,6 +750,9 @@ type ShellExecTool struct {
 	// AllowedWorkDirs working_dir 参数允许的目录白名单（沙箱范围）；
 	// 为空时不限制（保持向后兼容），建议由 RegisterBuiltinTools 注入工作目录。
 	AllowedWorkDirs []string
+	// Sandbox 执行沙箱（internal/sandbox）；nil 时退化为直通模式
+	//（独立进程组 + 组杀终止）。
+	Sandbox sandbox.Sandbox
 }
 
 func NewShellExecTool() *ShellExecTool {
@@ -809,7 +817,9 @@ func NewShellExecTool() *ShellExecTool {
 func (t *ShellExecTool) Name() string { return "shell_exec" }
 
 func (t *ShellExecTool) Description() string {
-	return "在受限 shell 环境中执行命令，返回标准输出和错误输出。危险操作会被安全策略拦截。"
+	return "在受限 shell 环境中执行命令，返回标准输出和错误输出。" +
+		"隔离措施：沙箱执行（" + sandboxName(t.Sandbox) + "）、环境变量白名单。" +
+		"危险操作会被安全策略拦截。"
 }
 
 func (t *ShellExecTool) Parameters() JSONSchema {
@@ -840,15 +850,8 @@ func (t *ShellExecTool) Execute(ctx context.Context, args map[string]interface{}
 		return Result{}, err
 	}
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-
-	// 环境隔离：白名单过滤父进程环境变量，剔除敏感变量
-	cmd.Env = sanitizeEnv(os.Environ())
-
-	// 独立进程组：便于按进程组终止整个子进程树（与 code_run 一致）
-	cmd.SysProcAttr = resourceLimits()
-
 	// 设置工作目录（沙箱校验：必须存在、是目录，且在允许的目录白名单内）
+	workDir := ""
 	if wd, ok := args["working_dir"].(string); ok && wd != "" {
 		info, err := os.Stat(wd)
 		if err != nil {
@@ -860,37 +863,56 @@ func (t *ShellExecTool) Execute(ctx context.Context, args map[string]interface{}
 		if err := t.validateWorkingDir(wd); err != nil {
 			return Result{}, err
 		}
-		cmd.Dir = wd
+		workDir = wd
 	}
 
-	// 输出限制：防止内存耗尽
+	// 沙箱执行：环境隔离（白名单过滤父进程环境变量）+ 输出限制
 	const maxOutput = 1 << 20 // 1MB
-	cmd.Stdout = &limitedWriter{limit: maxOutput}
-	cmd.Stderr = &limitedWriter{limit: maxOutput}
-
-	err := cmd.Run()
-
-	stdout := cmd.Stdout.(*limitedWriter).String()
-	stderr := cmd.Stderr.(*limitedWriter).String()
+	stdout, stderr, runErr := runSandboxed(ctx, t.Sandbox, []string{"sh", "-c", command}, workDir, sanitizeEnv(os.Environ()), maxOutput)
 
 	result := Result{
 		Output: stdout,
 		Metadata: map[string]interface{}{
 			"command": command,
-			"exit_ok": err == nil,
+			"exit_ok": runErr == nil,
+			"sandbox": sandboxName(t.Sandbox),
 		},
 	}
 
-	if err != nil {
+	if runErr != nil {
 		result.Error = stderr
 		if result.Error == "" {
-			result.Error = err.Error()
+			result.Error = runErr.Error()
 		}
 	} else if stderr != "" {
 		result.Metadata["stderr"] = stderr
 	}
 
 	return result, nil
+}
+
+// runSandboxed 在沙箱中执行 argv，返回截断后的 stdout/stderr 与运行错误。
+// workDir 为空时取当前进程工作目录（统一转绝对路径，容器模式挂载需要）；
+// sb 为 nil 时退化为直通沙箱（独立进程组 + 组杀终止）。
+func runSandboxed(ctx context.Context, sb sandbox.Sandbox, argv []string, workDir string, env []string, maxOutput int) (string, string, error) {
+	if sb == nil {
+		sb = sandbox.NewNone()
+	}
+	stdout := &limitedWriter{limit: maxOutput}
+	stderr := &limitedWriter{limit: maxOutput}
+	cmd, cleanup, err := sb.Compile(ctx, sandbox.ExecSpec{
+		Argv:    argv,
+		WorkDir: workDir,
+		Env:     env,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("沙箱编译执行失败: %w", err)
+	}
+	defer cleanup()
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	runErr := cmd.Run()
+	return stdout.String(), stderr.String(), runErr
 }
 
 // validateWorkingDir 校验 working_dir 在沙箱白名单内（防止在任意目录执行命令）。
@@ -1146,11 +1168,21 @@ func (w *limitedWriter) String() string {
 // RegisterBuiltinTools - 注册所有内置工具
 // ============================================================
 
-// RegisterBuiltinTools 将所有内置工具注册到给定的注册中心。
-// workDir 非空时转换为绝对路径，作为 file_read / file_write 的 AllowedDirs
-// 目录白名单（即工作目录沙箱：只允许读写该目录内的文件）；
-// 为空字符串时不设置白名单，保持不限制的现状。
+// RegisterBuiltinTools 将所有内置工具注册到给定的注册中心（直通模式，无沙箱）。
 func RegisterBuiltinTools(reg *Registry, workDir string) {
+	RegisterBuiltinToolsWithSandbox(reg, workDir, nil, 30*time.Second)
+}
+
+// RegisterBuiltinToolsWithSandbox 将所有内置工具注册到给定的注册中心，并为
+// shell_exec / code_run 注入执行沙箱。workDir 非空时转换为绝对路径，作为
+// file_read / file_write 的 AllowedDirs 目录白名单（即工作目录沙箱：只允许
+// 读写该目录内的文件）与 shell_exec 的 working_dir 白名单；为空字符串时不
+// 设置白名单，保持不限制的现状。execTimeout 为两个执行类工具的注册超时
+// （非正数时取默认 30 秒）。
+func RegisterBuiltinToolsWithSandbox(reg *Registry, workDir string, sb sandbox.Sandbox, execTimeout time.Duration) {
+	if execTimeout <= 0 {
+		execTimeout = 30 * time.Second
+	}
 	var allowedDirs []string
 	if workDir != "" {
 		if abs, err := filepath.Abs(workDir); err == nil {
@@ -1167,13 +1199,14 @@ func RegisterBuiltinTools(reg *Registry, workDir string) {
 	// 文件写入 - 高风险写操作，15 秒超时
 	reg.Register(&FileWriteTool{AllowedDirs: allowedDirs}, RiskHighWrite, 15*time.Second)
 
-	// 代码执行 - 危险操作，30 秒超时
-	reg.Register(&CodeRunTool{}, RiskDangerous, 30*time.Second)
+	// 代码执行 - 危险操作，沙箱执行
+	reg.Register(&CodeRunTool{Sandbox: sb}, RiskDangerous, execTimeout)
 
-	// Shell 命令 - 危险操作，30 秒超时（working_dir 限制在工作目录沙箱内）
+	// Shell 命令 - 危险操作，沙箱执行（working_dir 限制在工作目录沙箱内）
 	shellTool := NewShellExecTool()
 	shellTool.AllowedWorkDirs = allowedDirs
-	reg.Register(shellTool, RiskDangerous, 30*time.Second)
+	shellTool.Sandbox = sb
+	reg.Register(shellTool, RiskDangerous, execTimeout)
 }
 
 // RegisterSearchTool 将搜索工具注册到注册中心（需要搜索后端依赖）。

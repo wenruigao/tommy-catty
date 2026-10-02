@@ -13,6 +13,7 @@ import (
 	"github.com/wenruigao/tommy-catty/internal/kb"
 	"github.com/wenruigao/tommy-catty/internal/mcp"
 	"github.com/wenruigao/tommy-catty/internal/multiagent"
+	"github.com/wenruigao/tommy-catty/internal/sandbox"
 	"github.com/wenruigao/tommy-catty/internal/tool"
 	"github.com/wenruigao/tommy-catty/internal/tool/dbquery"
 	"github.com/wenruigao/tommy-catty/internal/tool/kbtools"
@@ -33,6 +34,44 @@ func (r *Result) Close() {
 	if r.Pool != nil {
 		r.Pool.Close()
 	}
+}
+
+// RegisterBuiltinTools 构建内置工具沙箱并注册全部内置工具（CLI 与 HTTP 入口共享）。
+// 沙箱类型取 cfg.Sandbox.Type（none 直通 / native 原生 / container 容器）；
+// 沙箱不可用时按 cfg.Sandbox.OnUnavailable 处理：
+//   - degrade（默认）：降级为直通沙箱并返回告警
+//   - error：返回错误（调用方应终止启动，保证不出现无隔离执行）
+//
+// 返回值为降级/能力告警列表（沙箱未启用时为空）。
+func RegisterBuiltinTools(cfg *config.Config, registry *tool.Registry) ([]string, error) {
+	kind := cfg.Sandbox.Type
+	if kind == "" {
+		kind = "none"
+	}
+
+	var warnings []string
+	sb := sandbox.New(kind, cfg.Sandbox.ToSandbox())
+	if kind == "native" || kind == "container" {
+		if err := sb.Available(); err != nil {
+			if cfg.Sandbox.OnUnavailable == "error" {
+				return nil, fmt.Errorf("沙箱 %s 不可用: %w", kind, err)
+			}
+			// degrade：降级为直通沙箱
+			sb = sandbox.NewNone()
+			warnings = append(warnings, fmt.Sprintf("沙箱 %s 不可用（%v），已降级为 none 直通执行", kind, err))
+		}
+	}
+	// 沙箱实现自身的能力告警（如缺少 prlimit、限额过小）
+	if w, ok := sb.(sandbox.Warner); ok {
+		warnings = append(warnings, w.Warnings()...)
+	}
+	if kind != "none" && len(warnings) == 0 {
+		warnings = append(warnings, fmt.Sprintf("沙箱已启用: %s（禁网: %v）", sb.Name(), !cfg.Sandbox.AllowNet))
+	}
+
+	timeout := time.Duration(cfg.Sandbox.TimeoutSeconds) * time.Second
+	tool.RegisterBuiltinToolsWithSandbox(registry, cfg.WorkDir, sb, timeout)
+	return warnings, nil
 }
 
 // RegisterDataTools 根据配置构建数据源池与知识库，并注册相关工具。

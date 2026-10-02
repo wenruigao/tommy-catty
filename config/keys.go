@@ -273,6 +273,34 @@ var keyRegistry = []KeySpec{
 		},
 	},
 	{
+		Key: "sandbox.type", Kind: KindEnum, EnumValues: []string{"none", "native", "container"},
+		Desc: "工具执行沙箱（none 直通 / native OS 原生沙箱 / container 容器）",
+		Get:  func(c *Config) string { return c.Sandbox.Type },
+		Set: func(c *Config, v string) error {
+			c.Sandbox.Type = v
+			return nil
+		},
+	},
+	{
+		Key: "sandbox.allow_net", Kind: KindEnum, EnumValues: []string{"true", "false"},
+		Desc: "沙箱内是否允许访问网络（默认 false 禁网）",
+		Get:  func(c *Config) string { return strconv.FormatBool(c.Sandbox.AllowNet) },
+		Set: func(c *Config, v string) error {
+			c.Sandbox.AllowNet = v == "true"
+			return nil
+		},
+	},
+	{
+		Key: "sandbox.timeout_seconds", Kind: KindInt, Desc: "沙箱工具执行超时（秒）",
+		Validate: positiveInt("沙箱超时"),
+		Get:      func(c *Config) string { return strconv.Itoa(c.Sandbox.TimeoutSeconds) },
+		Set: func(c *Config, v string) error {
+			n, _ := strconv.Atoi(v)
+			c.Sandbox.TimeoutSeconds = n
+			return nil
+		},
+	},
+	{
 		Key: "audit_log_path", Kind: KindString, Desc: "审计日志路径（空则禁用）",
 		Get: func(c *Config) string { return displayOr(c.AuditLogPath, "(未设置: 禁用)") },
 		Set: func(c *Config, v string) error {

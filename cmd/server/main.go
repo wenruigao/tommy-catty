@@ -52,9 +52,15 @@ func main() {
 	providers := gateway.ListProviders()
 	fmt.Printf("  🔌 已加载 %d 个模型供应商\n", len(providers))
 
-	// 初始化工具注册表
+	// 初始化工具注册表（含执行沙箱；error 模式下沙箱不可用则拒绝启动）
 	registry := tool.NewRegistry()
-	tool.RegisterBuiltinTools(registry, cfg.WorkDir)
+	sbWarnings, sbErr := bootstrap.RegisterBuiltinTools(cfg, registry)
+	if sbErr != nil {
+		log.Fatalf("沙箱初始化失败: %v", sbErr)
+	}
+	for _, w := range sbWarnings {
+		log.Printf("警告: %s", w)
+	}
 
 	// 初始化搜索工具
 	searchMgr := search.NewManager(cfg.Search)
