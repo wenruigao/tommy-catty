@@ -349,6 +349,21 @@ func main() {
 		}
 	}
 
+	// 配置热加载（SIGHUP 触发 policy.yaml 重载）
+	hotReloader := server.NewHotReloader()
+	hotReloader.Register(&server.FileResource{
+		FilePath: cfg.PolicyFile,
+		Label:    "policy.yaml",
+		OnReload: func(data []byte) error {
+			if secEngine != nil {
+				return secEngine.LoadPolicies(data)
+			}
+			return nil
+		},
+	})
+	hotReloader.Start()
+	defer hotReloader.Stop()
+
 	// HTTP 服务
 	addr := cfg.Server.Addr
 	srv := &http.Server{

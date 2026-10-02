@@ -1,0 +1,41 @@
+# golangci-lint 配置
+# 安装: brew install golangci-lint 或 go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+run:
+  timeout: 3m
+  tests: true
+
+linters:
+  enable:
+    - errcheck      # 未检查的 error 返回值
+    - govet         # go vet 超集
+    - staticcheck   # 高级静态分析
+    - unused        # 未使用的代码
+    - gosimple      # 可简化的代码
+    - ineffassign   # 无效赋值
+    - typecheck     # 类型检查
+    - misspell      # 拼写错误
+    - unconvert     # 不必要的类型转换
+    - gofmt         # 格式检查
+  disable:
+    - exhaustive    # enum 穷举（项目无 iota enum 模式）
+    - varnamelen    # 变量名长度（Go 惯例短名）
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+    check-blank: false
+  staticcheck:
+    checks: ["all", "-SA1019"]  # 忽略 deprecated 警告（内部包）
+  misspell:
+    locale: US
+
+issues:
+  exclude-rules:
+    # 测试文件允许更宽松的规则
+    - path: _test\.go
+      linters:
+        - errcheck
+        - unused
+  max-issues-per-linter: 50
+  max-same-issues: 10
