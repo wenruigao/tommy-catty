@@ -296,8 +296,9 @@ func main() {
 	// 构建 HTTP 路由
 	mux := http.NewServeMux()
 	handler := server.NewHandler(sessionMgr)
-	handler.Meter = gateway.Meter()              // /api/v1/usage 用量端点数据源（网关全局口径）
-	handler.SecEngine = secEngine                // task_end 成本评估（cost-guard）
+	handler.Meter = gateway.Meter()                       // /api/v1/usage 用量端点数据源（网关全局口径）
+	handler.SecEngine = secEngine                         // task_end 成本评估（cost-guard）
+	handler.Gateway = gateway                             // readiness 探针检查供应商可用性
 	handler.RequestTimeout = cfg.RequestTimeoutDuration() // 单次 chat 请求超时（默认 120s）
 	handler.RegisterRoutes(mux)
 
@@ -335,6 +336,9 @@ func main() {
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/api/", guarded)
 
+	// Request-ID 中间件（最外层：所有请求均获得 X-Request-ID，供日志关联）
+	finalHandler := server.RequestIDMiddleware(rootMux)
+
 	// Channel 接入层：未配置 channels 时完全不启动，行为与旧版一致
 	channelHub := buildChannels(cfg, sessionMgr, rootMux)
 	if channelHub != nil {
@@ -349,7 +353,7 @@ func main() {
 	addr := cfg.Server.Addr
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      rootMux,
+		Handler:      finalHandler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second, // Agent 执行可能较长
 		IdleTimeout:  120 * time.Second,

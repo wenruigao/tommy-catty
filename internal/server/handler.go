@@ -23,6 +23,12 @@ type Handler struct {
 	// SecEngine 安全策略引擎，任务完成后评估 task_end 检查点（携带 Cost，供 cost-guard）；nil 则跳过
 	SecEngine *security.Engine
 
+	// Gateway LLM 网关（readiness 探针检查供应商可用性）；nil 表示未配置
+	Gateway *llm.Gateway
+
+	// MemStore 记忆持久化存储（readiness 探针报告状态）；nil 表示未配置
+	MemStore interface{ Close() error }
+
 	// RequestTimeout 单次 chat 请求的最大执行时间（默认 120s；<= 0 不限）
 	RequestTimeout time.Duration
 }
@@ -38,6 +44,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/history", h.handleHistory)
 	mux.HandleFunc("POST /api/v1/clear", h.handleClear)
 	mux.HandleFunc("GET /api/v1/health", h.handleHealth)
+	mux.HandleFunc("GET /api/v1/ready", h.handleReadiness)
 	mux.HandleFunc("GET /api/v1/usage", h.handleUsage)
 	mux.HandleFunc("GET /metrics", h.handleMetrics)
 }
@@ -191,11 +198,60 @@ func (h *Handler) handleClear(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
-// handleHealth 健康检查。
+// handleHealth liveness 探针：进程存活即返回 200（K8s livenessProbe）。
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":          "ok",
+		"status": "ok",
+	})
+}
+
+// handleReadiness readiness 探针：检查依赖组件可用性（K8s readinessProbe）。
+// 任一关键依赖不可用则返回 503，负载均衡器摘除流量。
+func (h *Handler) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	checks := map[string]string{}
+	ready := true
+
+	// 会话管理器
+	if h.SessionMgr != nil {
+		checks["sessions"] = "ok"
+	} else {
+		checks["sessions"] = "unavailable"
+		ready = false
+	}
+
+	// LLM 网关（检查是否有可用供应商）
+	if h.Gateway != nil {
+		providers := h.Gateway.ListProviders()
+		if len(providers) > 0 {
+			checks["llm"] = "ok"
+		} else {
+			checks["llm"] = "no_providers"
+			ready = false
+		}
+	} else {
+		checks["llm"] = "unavailable"
+		ready = false
+	}
+
+	// 记忆存储
+	if h.MemStore != nil {
+		checks["memstore"] = "ok"
+	} else {
+		checks["memstore"] = "disabled"
+		// memstore 非关键依赖，不影响 readiness
+	}
+
+	status := "ready"
+	httpStatus := http.StatusOK
+	if !ready {
+		status = "not_ready"
+		httpStatus = http.StatusServiceUnavailable
+	}
+
+	writeJSON(w, httpStatus, map[string]interface{}{
+		"status":          status,
 		"active_sessions": h.SessionMgr.ActiveCount(),
+		"checks":          checks,
 	})
 }
 
