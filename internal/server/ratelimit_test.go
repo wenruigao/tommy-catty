@@ -119,8 +119,8 @@ func TestRateLimitMiddleware_429(t *testing.T) {
 		return w
 	}
 
-	makeReq() // 1
-	makeReq() // 2
+	makeReq()      // 1
+	makeReq()      // 2
 	w := makeReq() // 3 → 429
 
 	if w.Code != http.StatusTooManyRequests {

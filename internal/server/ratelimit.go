@@ -22,12 +22,12 @@ func DefaultRateLimitConfig() RateLimitConfig {
 
 // UserRateLimiter 管理所有用户的令牌桶，带自动过期清理。
 type UserRateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*tokenBucket
-	rate     float64 // 每秒补充令牌数
-	burst    int     // 桶容量
-	stopCh   chan struct{}
-	stopped  bool
+	mu      sync.Mutex
+	buckets map[string]*tokenBucket
+	rate    float64 // 每秒补充令牌数
+	burst   int     // 桶容量
+	stopCh  chan struct{}
+	stopped bool
 }
 
 // tokenBucket 单用户令牌桶。

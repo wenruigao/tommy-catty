@@ -314,8 +314,8 @@ func TestReport_Format_WithFixes(t *testing.T) {
 
 func TestReport_Format_NoSuggestions(t *testing.T) {
 	report := &Report{
-		Results:    []CheckResult{{Name: "ok", Status: StatusOK, Message: "fine"}},
-		TotalOK:    1,
+		Results: []CheckResult{{Name: "ok", Status: StatusOK, Message: "fine"}},
+		TotalOK: 1,
 	}
 	out := report.Format()
 	if strings.Contains(out, "Manual action required") {
