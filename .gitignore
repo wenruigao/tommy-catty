@@ -52,3 +52,14 @@ data/audit.jsonl
 # 记忆持久化运行产物（memstore file/sqlite 后端）
 data/memories/
 data/memory.db
+# sqlite WAL 模式边车文件（memstore 启用 journal_mode=WAL 后产生）
+data/memory.db-shm
+data/memory.db-wal
+data/*.db-shm
+data/*.db-wal
+
+# 误建在仓库根目录的构建产物（go build ./cmd/xxx 会在当前目录留下同名二进制）
+/server
+/tommy-agent
+/tommy-server
+/tommy-memstore
