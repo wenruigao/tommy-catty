@@ -1,41 +1,78 @@
-# golangci-lint 配置
-# 安装: brew install golangci-lint 或 go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+# golangci-lint 配置（v2 schema）
+# 安装: brew install golangci-lint
+# 或  : go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+#
+# 注意：必须使用 golangci-lint v2.x。v1 最后一个版本（1.64.8）由 Go 1.24 构建，
+# 低于本项目 go.mod 声明的 Go 1.26.0，会直接报错拒绝加载配置：
+#   can't load config: the Go language version (go1.24) used to build
+#   golangci-lint is lower than the targeted Go version (1.26.0)
+
+version: "2"
 
 run:
   timeout: 3m
   tests: true
 
 linters:
+  # 显式列出启用项，不依赖 default 集合的变动
+  default: none
   enable:
     - errcheck      # 未检查的 error 返回值
     - govet         # go vet 超集
-    - staticcheck   # 高级静态分析
+    - staticcheck   # 高级静态分析（v2 已并入原 gosimple / stylecheck）
     - unused        # 未使用的代码
-    - gosimple      # 可简化的代码
     - ineffassign   # 无效赋值
-    - typecheck     # 类型检查
-    - misspell      # 拼写错误
     - unconvert     # 不必要的类型转换
-    - gofmt         # 格式检查
-  disable:
-    - exhaustive    # enum 穷举（项目无 iota enum 模式）
-    - varnamelen    # 变量名长度（Go 惯例短名）
+    - misspell      # 拼写错误
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+      # 惯用写法白名单：这些调用点的返回值「即使检查也无事可做」，
+      # 强行处理只会增加噪音。真正的错误处理疏漏仍会被报出。
+      exclude-functions:
+        # 交互式读取：EOF（Ctrl-D）是预期路径，无错误可处理
+        - fmt.Scanln
+        # 响应体已在写出，Encode/Write 失败时连接已不可用，无法补救
+        - (*encoding/json.Encoder).Encode
+        - (net/http.ResponseWriter).Write
+        - (*net/http.responseWriter).Write
+    misspell:
+      locale: US
+    staticcheck:
+      checks:
+        - all
+        # SA1019 = deprecated 警告；internal 包内部演进期噪音过大
+        - "-SA1019"
+        # QF* = quickfix 风格建议（fmt.Fprintf 替代 WriteString(Sprintf)、
+        # 德摩根律、tagged switch 等），不涉及正确性
+        - "-QF*"
+        # ST1003 = 命名风格（如 EventTs→EventTS）。既有字段重命名收益低、
+        # 波及面大，且项目内 Ts 缩写用法一致
+        - "-ST1003"
+        # S1016 = 建议用类型转换替代结构体字面量，纯风格偏好
+        - "-S1016"
+  exclusions:
+    generated: lax
+    presets:
+      # 官方预设：排除 Go 惯用写法的误报，主要是 defer f.Close() /
+      # defer resp.Body.Close() / http.ResponseWriter.Write 等
+      # 「已提交响应或延迟关闭，检查返回值也无事可做」的场景
+      - std-error-handling
+      - common-false-positives
+    rules:
+      # 测试文件放宽：断言失败路径、构造用桩函数常触发 errcheck/unused
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unused
+      # 项目约定为每个文件写「// xxx.go 实现……」文件级注释，
+      # staticcheck ST1000 会把它误判为不合规的包注释。
+      # 真正的包文档由各包的主文件（如 router.go）承担。
+      - linters:
+          - staticcheck
+        text: "ST1000"
 
-linters-settings:
-  errcheck:
-    check-type-assertions: false
-    check-blank: false
-  staticcheck:
-    checks: ["all", "-SA1019"]  # 忽略 deprecated 警告（内部包）
-  misspell:
-    locale: US
-
-issues:
-  exclude-rules:
-    # 测试文件允许更宽松的规则
-    - path: _test\.go
-      linters:
-        - errcheck
-        - unused
-  max-issues-per-linter: 50
-  max-same-issues: 10
+formatters:
+  enable:
+    - gofmt

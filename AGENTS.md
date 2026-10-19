@@ -175,13 +175,16 @@ bin/                  构建产物
 - 集成测试通过导入 `modernc.org/sqlite` 驱动 + 内存数据库实现（见 `internal/tool/dbquery/tool_integration_test.go`、`internal/bootstrap/bootstrap_test.go`）。
 - 已有测试覆盖：config、llm（重试/缓存/类型）、engine、security、memory、memstore（含异步写落盘）、skill、session、ctxmgr、tool（含 sanitizer）、dbquery、kbtools、kb、mcp、trace、bootstrap、registry、metrics、multiagent、sandbox（含超时按进程组整树终止的回归测试）、doctor、server（限流/Request-ID/readiness/热加载）、cmd/memstore。
 - 尚无测试的包：cmd/agent、cmd/server 主体——修改这些包时建议补充测试。
-- 修改代码后务必运行 `go build ./... && go vet ./... && go test ./...` 验证（或 `make check`）。
+- 修改代码后务必运行完整验证（或 `make check`）：
+  `gofmt -l .`（**必须为空**，CI 断言 `test -z "$(gofmt -l .)"`）→ `go build ./...` → `go vet ./...` → `golangci-lint run ./...` → `go test ./...`。
+  注意 gofmt 与 lint 不在 `go build/vet/test` 的覆盖范围内，漏跑会让本地全绿但 CI 失败。
 
 ## 其他说明
 
 - 项目根目录有两份中文 Word 文档（`AI_Agent_技术方案.docx`、`Tommy-Cat_Agent_使用手册.docx`），包含更详细的设计与使用说明。
 - `data/skills.json` 与 `data/users/`（每用户 user.md 画像）为运行时生成内容，不要手工编辑（user.md 允许用户手工修改，profiler 更新时会保留仍有效的旧偏好）。
-- **有 Makefile 与 `.golangci.yml`**：`make build/test/lint/vet/cover/clean/check`（`check` = fmt + vet + test）。CI 配置为 `.github/workflows/ci.yml`（gofmt 检查、vet、golangci-lint、test、linux/darwin 交叉编译）。
+- **有 Makefile 与 `.golangci.yml`**：`make build/test/lint/vet/cover/clean/check`（`check` = fmt + vet + lint + test，与 CI 步骤对齐）。CI 配置为 `.github/workflows/ci.yml`（gofmt 检查、vet、golangci-lint、test、linux/darwin 交叉编译）。
+- **golangci-lint 必须用 v2.x**：`.golangci.yml` 为 v2 schema（`version: "2"`）。v1 最后一个版本 1.64.8 由 Go 1.24 构建，低于 go.mod 的 Go 1.26.0，会报 `can't load config: the Go language version ... is lower than the targeted Go version` 而拒绝加载配置；CI 中 `version:` 已钉死为 `v2.15.0`，**不要改回 `latest`**（它曾解析到 v1 导致 CI 连续失败）。
 - `go` 工具链若不在 PATH，可尝试 `/opt/homebrew/bin/go`（Homebrew 安装，本机已验证）或 `~/local/go/bin/go`、`~/go-sdk/go/bin/go`。
 - 手动测试清单见 `手动运行手册.md`（含完整功能测试项，分环境准备、内置工具、安全策略、记忆、HTTP 服务、Channel 接入等章节）。
 - 新增子系统后须同步更新 `AI_Agent_技术方案.md`（权威设计记录）与 `docs/ARCHITECTURE.md`，并核对实现与设计一致。

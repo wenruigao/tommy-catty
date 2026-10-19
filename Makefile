@@ -33,7 +33,7 @@ cover: ## 测试覆盖率报告
 	$(GO) tool cover -func=coverage.out | tail -1
 	@echo "详细报告: $(GO) tool cover -html=coverage.out"
 
-check: fmt vet test ## 完整检查流水线（fmt + vet + test）
+check: fmt vet lint test ## 完整检查流水线（与 CI 步骤对齐：fmt + vet + lint + test）
 
 # ── 运行 ──────────────────────────────────────────────
 run-cli: build-cli ## 运行 CLI REPL

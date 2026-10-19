@@ -31,9 +31,12 @@ jobs:
         run: go vet ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # 必须钉住 v2.x：v1 最后一个版本（1.64.8）由 Go 1.24 构建，
+          # 低于 go.mod 声明的 Go 1.26.0，会直接报错拒绝加载配置。
+          # 也不要用 latest——它曾解析到 v1 导致 CI 长期失败。
+          version: v2.15.0
           args: --timeout=3m
 
       - name: go test
