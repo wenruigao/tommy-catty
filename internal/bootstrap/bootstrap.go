@@ -13,6 +13,7 @@ import (
 	"github.com/wenruigao/tommy-catty/internal/kb"
 	"github.com/wenruigao/tommy-catty/internal/mcp"
 	"github.com/wenruigao/tommy-catty/internal/multiagent"
+	"github.com/wenruigao/tommy-catty/internal/router"
 	"github.com/wenruigao/tommy-catty/internal/sandbox"
 	"github.com/wenruigao/tommy-catty/internal/tool"
 	"github.com/wenruigao/tommy-catty/internal/tool/dbquery"
@@ -295,4 +296,80 @@ func RegisterMultiAgentTools(
 		roleNames = append(roleNames, name)
 	}
 	return roleNames, nil
+}
+
+// RegisterRouter 根据配置构建意图路由器，返回 (路由器, 告警列表, error)。
+//
+// 未启用（router.enabled=false）时返回 (nil, nil, nil)，调用方据此跳过路由注入，
+// 行为与旧版完全一致；已启用但未定义 Agent 时返回告警并跳过。
+//
+// 两类问题区别对待：
+//
+//   - 配置本身错误 → 返回 error（应拒绝启动，尽早暴露）：
+//     Agent 名与键不一致、缺少 description/system_prompt、兜底 Agent 未定义、
+//     patterns 正则编译失败。
+//   - 工具白名单引用了当前未注册的工具 → 仅告警，不阻断启动。
+//     因为 web_search / db_query / kb_* 等工具是**有条件注册**的（分别依赖
+//     search / databases / knowledge_bases 配置段），未配相应能力时它们本就不存在。
+//     白名单无法凭空授予能力（ToToolDefs 只返回注册表中真实存在的工具），
+//     故这不是安全问题；且路由定位为「尽力而为的增强」，不应因此拒绝启动。
+//     告警仍会打印，以便发现真正的拼写错误。
+func RegisterRouter(
+	cfg *config.Config,
+	registry *tool.Registry,
+	llmClient engine.LLMClient,
+) (*router.Router, []string, error) {
+	if !cfg.Router.Enabled {
+		return nil, nil, nil
+	}
+	if len(cfg.Router.Agents) == 0 {
+		return nil, []string{"意图路由已启用但未定义 Agent，跳过"}, nil
+	}
+
+	agents := make(map[string]*router.AgentSpec, len(cfg.Router.Agents))
+	for name, entry := range cfg.Router.Agents {
+		agents[name] = &router.AgentSpec{
+			Name:          name,
+			Description:   entry.Description,
+			SystemPrompt:  entry.SystemPrompt,
+			Tools:         entry.Tools,
+			Keywords:      entry.Keywords,
+			Patterns:      entry.Patterns,
+			Priority:      entry.Priority,
+			MaxIterations: entry.MaxIterations,
+		}
+	}
+
+	// 收集未注册工具的告警（不阻断启动，理由见函数注释）
+	var warnings []string
+	registered := make(map[string]bool, len(registry.List()))
+	for _, m := range registry.List() {
+		registered[m.Tool.Name()] = true
+	}
+	for name, spec := range agents {
+		missing := make([]string, 0)
+		for _, t := range spec.Tools {
+			if !registered[t] {
+				missing = append(missing, t)
+			}
+		}
+		if len(missing) > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"路由 Agent %q 的工具白名单含当前未注册的工具 %v（可能未配置对应能力，或存在拼写错误）；"+
+					"这些工具不会生效，其余工具正常", name, missing))
+		}
+	}
+
+	r, err := router.NewRouter(agents, router.Config{
+		Enabled:             true,
+		LLMTimeout:          cfg.RouterLLMTimeout(),
+		ConfidenceThreshold: cfg.Router.ConfidenceThreshold,
+		FallbackAgent:       cfg.Router.FallbackAgent,
+		UseLLM:              cfg.RouterUseLLM(),
+	}, llmClient)
+	if err != nil {
+		return nil, warnings, fmt.Errorf("意图路由配置校验失败: %w", err)
+	}
+
+	return r, warnings, nil
 }

@@ -143,6 +143,20 @@ func main() {
 		fmt.Printf("  🤖 多 Agent 协作: 已注册 %d 个角色 (%s)\n", len(maRoles), strings.Join(maRoles, ", "))
 	}
 
+	// 构建意图路由器（router.enabled=false 时返回 nil，行为与旧版一致）
+	intentRouter, routerWarnings, routerErr := bootstrap.RegisterRouter(cfg, registry, llmAdapter)
+	if routerErr != nil {
+		fmt.Printf("  ❌ 意图路由初始化失败: %v\n", routerErr)
+		os.Exit(1)
+	}
+	for _, w := range routerWarnings {
+		fmt.Printf("  ⚠️  %s\n", w)
+	}
+	if intentRouter != nil {
+		fmt.Printf("  🧭 意图路由: %s（兜底 %s）\n",
+			strings.Join(intentRouter.AgentNames(), ", "), intentRouter.FallbackAgent())
+	}
+
 	// 初始化摘要生成器（用于上下文压缩）
 	summarizer := ctxmgr.NewLLMSummarizer(llmAdapter.Chat)
 
@@ -223,6 +237,8 @@ func main() {
 		RateLimit: session.RateLimitConfig{
 			RequestsPerMinute: cfg.Session.RequestsPerMinute,
 		},
+		// 意图路由：nil 时 session 层完全跳过路由，行为与旧版一致
+		Router: intentRouter,
 	}
 
 	smCfg := session.ManagerConfig{

@@ -743,6 +743,108 @@ mcp:
 
 ---
 
+### 3.10 意图路由 (`internal/router/`)
+
+**职责**：在请求进入 ReAct 循环之前对用户问题做意图分类，分派给对应的预设专职 Agent（独立系统提示词 + 工具白名单），未命中或分类失败时回落通用 Agent。
+
+**技术选型**：规则匹配（零成本零延迟）优先，LLM 分类兜底，全程失败静默回落——路由是尽力而为的增强，绝不成为请求路径上的新失败点。
+
+#### 分类流程
+
+```
+用户输入
+  ├─ ① 规则匹配（keywords 子串 / patterns 正则，按 priority 降序）
+  │     命中且 confidence ≥ threshold → Decision{method:"rule"}
+  ├─ ② LLM 分类（无工具、5s 超时、JSON 输出）
+  │     agent 存在且 confidence ≥ threshold → Decision{method:"llm"}
+  └─ ③ 回落 → Decision{method:"fallback", agent:"general"}
+```
+
+#### 单 Engine 复用（关键设计）
+
+路由**不为每个 Agent 新建 Engine**，而是复用会话已有的唯一 Engine，通过两个既有钩子分派：
+
+| 分派维度 | 复用机制 | 位置 |
+|---------|---------|------|
+| 系统提示词 | `EngineConfig.SystemPromptProvider func() string` | `internal/engine/engine.go:90` |
+| 工具白名单 | 包装 `engine.ToolCaller`，过滤 `ToToolDefs()` + 拒绝白名单外 `Call()` | `internal/engine/react.go:50` |
+
+收益：每用户仅 1 个 Engine（而非 N+1）；记忆、上下文压缩、Tracer、三道门禁天然共享；多轮对话切换话题不割裂。
+
+路由状态存于 `UserSession.currentAgent`，`Run()` 全程持 `s.mu` 串行执行，无需额外同步。
+
+#### 与 multi_agent 的分工
+
+| 维度 | `router.agents` | `multi_agent.roles` |
+|------|-----------------|---------------------|
+| 触发方 | 系统自动（入口分类） | 主 Agent 调用 `delegate_task` |
+| 场景 | 单意图请求精准分派 | 复杂任务分解 + 多角色协作 |
+| 执行体 | 复用会话唯一 Engine | 每子任务新建 Worker Engine |
+| 记忆 | 共享用户 CombinedMemory | 一次性 `workerMemory` |
+
+两者可并存：路由选中某 Agent 后，该 Agent 仍可调用 `delegate_task`。
+
+#### 安全约束
+
+- **只收窄不扩张**：`ToToolDefs()` 仅返回注册表中真实存在的工具，白名单无法凭空授予能力
+- **门禁不降级**：ToolGate / OutputGate / ReturnGate 原样继承
+- **Persona 不被绕过**：Agent 的 `SystemPrompt` 仅替换 base prompt，仍经 `BuildSystemPrompt(agentMD, base, soulMD, userMD)` 组装，`config/agent.md` 权限边界保持最高优先级
+- **白名单外调用**：返回带 `Error` 的 `tool.Result`（非 Go error），交 ReAct 循环自行收敛
+
+#### 失败降级
+
+路由是尽力而为的增强，绝不成为请求路径上的新失败点：
+
+| 异常 | 行为 |
+|------|------|
+| LLM 超时 / 非法 JSON / 未知 Agent / 低置信度 | 回落 `general` |
+| LLM 客户端装配异常导致 panic | `recover` 捕获后回落 |
+| 白名单引用未注册工具 | 启动期**告警**，不阻断启动 |
+| 正则编译失败 / 兜底 Agent 缺失 / 缺 description 或 system_prompt | 启动期**报错**拒绝启动 |
+
+未注册工具只告警的原因：`web_search` / `db_query` / `kb_*` 是**有条件注册**的（分别依赖 `search` / `databases` / `knowledge_bases` 配置段），未配相应能力时本就不存在；若视为致命错误，随附预设会导致全新安装无法启动。又因白名单无法凭空授予能力，故非安全问题。
+
+#### 分类时机
+
+在 `UserSession.Run()` 中，`SanitizeInput` **之后**、`skillHint` 拼接**之前**——Skill 命中会注入执行经验文本，在其后分类会污染分类输入。因此路由基于净化后的用户原始意图判断，且分类 prompt 更短更省 token。
+
+#### 预设 Agent（4 + 1 兜底）
+
+| Agent | 定位 | 工具白名单 |
+|-------|------|-----------|
+| `general` | 兜底通用助手 | 全部（不限制） |
+| `researcher` | 信息检索与调研 | web_search, web_fetch, kb_* |
+| `coder` | 编码与命令执行 | code_run, shell_exec, file_* |
+| `analyst` | 数据查询与分析 | db_query, code_run, file_read |
+| `writer` | 文档撰写与整理 | file_*, kb_search, kb_read |
+
+#### 配置示例
+
+```yaml
+router:
+  enabled: true
+  llm_timeout: "5s"
+  confidence_threshold: 0.6
+  fallback_agent: "general"
+  use_llm: true                # 置 false 则纯规则模式（零成本零延迟）
+  agents:
+    coder:
+      description: "编程与命令执行专家"
+      system_prompt: |
+        你是一名资深软件工程师……
+      tools: ["code_run", "shell_exec", "file_read", "file_write"]
+      keywords: ["代码", "脚本", "报错", "debug"]
+      patterns: ['^(帮我)?(写|实现|修复).*?(函数|脚本|程序)$']
+      priority: 10
+      max_iterations: 20       # 可选，覆盖会话默认迭代上限
+```
+
+**装配**：`bootstrap.RegisterRouter(cfg, registry, llmClient)` 仿 `RegisterMultiAgentTools`，`enabled=false` 时返回 nil（零影响）。实现在 session 层的 `UserSession.Run()`，因此 HTTP / CLI / 8 种渠道全入口自动生效。
+
+**可观测性**：`tommy_router_decisions_total{agent,method}` 指标 + 路由决策 trace span + `slog.Info("路由决策", ...)`。
+
+---
+
 ## 4. 数据流架构
 
 ```

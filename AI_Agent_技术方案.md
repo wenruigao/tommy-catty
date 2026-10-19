@@ -28,12 +28,14 @@ Tommy-Cat Agent 是一个用 Go 语言实现的通用任务智能体，采用 Re
                 │ 统一身份（userID / 渠道会话键 "渠道:用户ID"）
 ┌───────────────▼──────────── 会话层 ────────────────────────────┐
 │  SessionManager（per-user 会话、TTL、上限回收）                 │
-│  per-user 限流（token bucket）  task_start 安全门禁             │
+│  HTTP 频率限流 + 全局并发信号量   task_start 安全门禁           │
+│  意图路由（规则→LLM→回落，选定预设 Agent）                      │
 │  Persona（agent.md / soul.md / 每用户 user.md 画像）            │
 └───────────────┬────────────────────────────────────────────────┘
 ┌───────────────▼──────────── 引擎层 ────────────────────────────┐
 │  ReAct Engine（思考→行动→观察循环，max_iterations 保护）        │
 │  上下文压缩 (ctxmgr)   反思与重规划   Skill 匹配/生成门控       │
+│  路由 Agent 提示词 + 工具白名单（单 Engine 复用）               │
 │  多 Agent 编排（Orchestrator-Worker，delegate_task 工具）       │
 └───────┬───────────────────────┬────────────────────────────────┘
         │                       │
@@ -281,15 +283,155 @@ type Sandbox interface {
 
 **装配**：`bootstrap.RegisterBuiltinTools` 根据配置构造 Sandbox 实例，注入 CodeRunTool / ShellExecTool；工具执行 Metadata 携带 `sandbox` 字段进审计日志。
 
+### 3.12 意图路由与预设 Agent（internal/router）
+
+在请求进入 ReAct 循环**之前**对用户问题做意图分类，分派给对应的预设专职 Agent（独立系统提示词 + 工具白名单）。未命中或分类失败时回落通用 Agent，行为与现状一致。
+
+**定位与边界**：路由是「入口分派」层，与既有两层正交——
+
+| 层 | 回答的问题 | 位置 |
+|----|-----------|------|
+| 意图路由（本节） | 该由哪个专职 Agent 处理 | ReAct 循环之前 |
+| ToolGate（§3.4） | 这个工具调用是否允许 | 每次工具执行前 |
+| Sandbox（§3.11） | 这个命令在哪里执行 | 工具执行时 |
+
+路由**只做收窄不做扩张**：`ToToolDefs()` 仅返回注册表中真实存在的工具，故白名单无法凭空授予能力；ToolGate 与 OutputGate 原样继承，安全策略不因路由而降级。
+
+**与 multi_agent（§3.10）的区别**：
+
+| 维度 | `router.agents`（本节） | `multi_agent.roles`（§3.10） |
+|------|------------------------|------------------------------|
+| 触发方 | 系统自动（入口分类） | 主 Agent 主动调用 `delegate_task` |
+| 场景 | 单意图请求的精准分派 | 复杂任务分解 + 多角色协作 |
+| 执行体 | 复用会话唯一 Engine | 每子任务新建独立 Worker Engine |
+| 记忆 | 共享用户 CombinedMemory | Worker 使用一次性 `workerMemory` |
+| 输出 | Agent 直接产出最终答案 | Orchestrator 汇总多 Worker 结果 |
+
+两者可并存：路由选中某 Agent 后，该 Agent 仍可调用 `delegate_task` 发起多角色协作。
+
+**分类流程**：
+
+```
+用户输入
+  │
+  ├─ ① 规则匹配（keywords / patterns，按 priority 降序）
+  │     命中且 confidence ≥ threshold ────────────→ Decision{method:"rule"}
+  │     ↓ 未命中
+  ├─ ② LLM 分类（无工具、短超时、JSON 输出）
+  │     解析成功 + agent 存在 + confidence ≥ threshold → Decision{method:"llm"}
+  │     ↓ 超时 / 解析失败 / 未知 agent / 低置信度
+  └─ ③ 静默回落 ─────────────────────────────────→ Decision{method:"fallback", agent:"general"}
+```
+
+**核心接口**：
+
+```go
+// AgentSpec 预设 Agent 定义
+type AgentSpec struct {
+    Name          string   // 唯一标识
+    Description   string   // 能力描述（供 LLM 分类参考）
+    SystemPrompt  string   // 角色专属提示词
+    Tools         []string // 工具白名单；空 = 不限制
+    Keywords      []string // 规则触发词（子串匹配）
+    Patterns      []string // 规则触发正则
+    Priority      int      // 规则优先级（大者先匹配）
+    MaxIterations int      // 可选，覆盖会话默认迭代上限
+}
+
+// Decision 路由决策结果
+type Decision struct {
+    Agent      string  // 目标 Agent 名
+    Confidence float64 // 置信度 0~1
+    Method     string  // "rule" | "llm" | "fallback"
+    Reason     string  // 决策依据（进日志与 trace span）
+}
+
+// Router 意图路由器
+type Router struct { /* agents 按 priority 排序 + LLM client + Config */ }
+
+func (r *Router) Classify(ctx context.Context, input string) Decision
+```
+
+**单 Engine 复用方案**：路由**不为每个 Agent 新建 Engine**，而是复用会话已有的唯一 Engine，通过两个既有钩子实现分派——
+
+| 分派维度 | 复用机制 | 代码位置 |
+|---------|---------|---------|
+| 系统提示词 | `EngineConfig.SystemPromptProvider func() string`，每次 Run 动态生成 | `internal/engine/engine.go:90` |
+| 工具白名单 | 包装 `engine.ToolCaller`，过滤 `ToToolDefs()` 并拒绝白名单外 `Call()` | `internal/engine/react.go:50` 每轮迭代调用 |
+
+对比 N-Engine 方案的收益：
+
+- **内存**：每用户 1 个 Engine 而非 N+1 个（N 个 Agent × M 个用户）
+- **一致性**：记忆、上下文压缩、Tracer、三道门禁天然共享，无需在多个 Engine 间同步
+- **连贯性**：多轮对话中用户切换话题，历史与工作记忆不割裂
+
+路由状态存于 `UserSession.currentAgent` 字段。`Run()` 全程持有 `s.mu`，同用户请求串行执行，因此该字段无需额外同步；不同用户各自持有独立 session，无共享指针。
+
+**Persona 不被绕过**：路由命中时，Agent 的 `SystemPrompt` 仅替换 base prompt，仍经 `BuildSystemPrompt(agentMD, base, soulMD, userMD)`（`internal/session/persona.go:57`）组装。`config/agent.md` 声明的职责与权限边界保持最高优先级。
+
+**白名单外调用的处理**：LLM 可能沿用会话历史中见过的工具名发起调用。`routeToolFilter.Call()` 对白名单外工具返回带 `Error` 的 `tool.Result`（而非 Go error），交由 ReAct 循环自行观察并收敛，不中断整个任务。
+
+**预设 Agent（4 + 1 兜底）**：
+
+| Agent | 定位 | 工具白名单 | 规则触发词示例 |
+|-------|------|-----------|--------------|
+| `general` | 兜底通用助手 | 全部（不限制） | — |
+| `researcher` | 信息检索与调研 | web_search, web_fetch, kb_search, kb_read, kb_list | 搜索/查找/最新/新闻/调研/对比 |
+| `coder` | 编码与命令执行 | code_run, shell_exec, file_read, file_write | 代码/脚本/运行/执行/报错/debug |
+| `analyst` | 数据查询与分析 | db_query, code_run, file_read | 查询/SQL/数据库/统计/报表 |
+| `writer` | 文档撰写与整理 | file_read, file_write, kb_search, kb_read | 写/文档/总结/翻译/润色 |
+
+全部经 YAML 声明式定义，可按需增删改，无需改代码。
+
+**失败降级**：路由是**尽力而为的增强**，绝不成为请求路径上的新失败点——
+
+| 异常 | 行为 |
+|------|------|
+| LLM 分类超时（默认 5s） | 回落 `general` |
+| LLM 返回非法 JSON | 回落 `general` |
+| LLM 返回未知 Agent 名 | 回落 `general` |
+| 置信度低于阈值（默认 0.6） | 回落 `general` |
+| LLM 客户端装配异常导致 panic | `recover` 捕获后回落 `general` |
+| 白名单引用未注册工具 | 启动期告警，不阻断启动（见下） |
+| 规则正则编译失败 / 兜底 Agent 缺失 / 缺少 description 或 system_prompt | 启动期报错拒绝启动（配置错误应尽早暴露） |
+
+回落均记日志与 `method:"fallback"` 指标，便于统计分类质量。
+
+**未注册工具为何只告警**：`web_search` / `db_query` / `kb_*` 属于**有条件注册**的工具，分别依赖 `search` / `databases` / `knowledge_bases` 配置段；未配置对应能力时它们本就不存在于注册表。若将其视为致命错误，随附的 researcher/analyst/writer 预设会导致全新安装直接启动失败。又因白名单无法凭空授予能力（`ToToolDefs` 只返回真实存在的工具），这不是安全问题，故降级为启动告警——既能暴露拼写错误，又不阻断启动。
+
+**装配**：`bootstrap.RegisterRouter(cfg, registry, llmClient)` 仿 `RegisterMultiAgentTools`（`internal/bootstrap/bootstrap.go:248`）——`enabled=false` 时返回 nil（零影响）；否则校验 Agent 名唯一、`fallback_agent` 存在、正则可编译，收集未注册工具告警，再注入 `SessionDeps.Router`。CLI 与 HTTP 入口共享同一装配函数。
+
+**配置项**（`router` 段，默认 `enabled: false`，与现状完全一致）：
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `enabled` | false | 关闭时 `RegisterRouter` 返回 nil，session 层完全跳过路由 |
+| `llm_timeout` | "5s" | LLM 分类调用超时 |
+| `confidence_threshold` | 0.6 | 低于此值回落 general |
+| `fallback_agent` | "general" | 兜底 Agent 名，必须存在于 agents 中 |
+| `use_llm` | true | 规则未命中时是否调用 LLM 分类；置 false 则纯规则模式（零成本零延迟） |
+| `agents.<name>` | — | Agent 定义（description / system_prompt / tools / keywords / patterns / priority / max_iterations） |
+
+**生效范围**：路由实现在 session 层的 `UserSession.Run()` 中，因此 HTTP API、CLI REPL、8 种 Channel adapter 全部自动生效——它们都经 `SessionManager` 走同一条 Run 路径。
+
+分类时机为 `SanitizeInput` **之后**、`skillHint` 拼接**之前**（与初版设计的「skillHint 之后」有意偏离）：Skill 命中时会把已验证的执行经验拼接到目标之前，若在此之后分类，注入的提示文本会污染分类输入；基于净化后的用户原始意图分类更准确，且分类 prompt 更短更省 token。
+
+**可观测性**：
+
+- 指标：`tommy_router_decisions_total{agent,method}`（`CounterVec`，仿 `AgentWorkers()`）
+- 追踪：路由决策记为独立 span，携带 agent / method / confidence / reason
+- 日志：`slog.Info("路由决策", "agent", ..., "method", ..., "confidence", ..., "reason", ...)`
+
 ## 4. 关键数据流（HTTP chat 为例）
 
 ```
 POST /api/v1/chat
   → 认证（header/api_key/jwt）→ task_start 门禁（注入拦截）
   → SessionManager 取/建会话 → per-user 限流
-  → Persona 组装系统提示词 → Skill 匹配（命中则注入 PromptHints）
+  → 意图路由分类（规则优先 → LLM 兜底 → 回落 general）
+  → Persona 组装系统提示词（路由命中则替换 base prompt）→ Skill 匹配
   → ReAct 循环：LLM Gateway（缓存→供应商→重试/熔断/降级）
-      ├─ 工具调用：tool_call 策略评估 → 沙箱隔离执行 → tool_return 清洗
+      ├─ 工具调用：白名单过滤 → tool_call 策略评估 → 沙箱隔离执行 → tool_return 清洗
       ├─ 上下文超限时自动压缩
       └─ delegate_task 调用 → Orchestrator 分解任务
           ├─ Worker 并行/串行执行（各自独立 Engine + 工具子集）
@@ -304,8 +446,9 @@ POST /api/v1/chat
 |--------|------|
 | `llm` | 供应商、默认/降级、重试、熔断、`cache`（语义缓存）、`meter`（日预算） |
 | `engine` | 最大迭代、trace 导出路径、反思参数 |
-| `server` | HTTP 模式：地址、认证模式与密钥 |
-| `session` | per-user 限流 |
+| `server` | HTTP 模式：地址、认证模式与密钥、`rate_limit`（per-user 频率限流）、`request_timeout` |
+| `session` | 会话容量与 TTL、全局并发执行上限 `max_concurrent_runs` |
+| `log` | 结构化日志：format（text/json）、level、output |
 | `persona` | agent.md / soul.md / 画像更新间隔 |
 | `memory` | 分层记忆存储（远端 url/token/timeout、各层保留窗口 sqlite_retention/file_retention）与预热条数、每用户容量上限 |
 | `databases` | db_query 数据源（表/列白名单、DSN） |
@@ -315,6 +458,7 @@ POST /api/v1/chat
 | `mcp.servers` | MCP 远程工具（stdio / sse） |
 | `channels` | 渠道接入层（8 种渠道声明式配置） |
 | `multi_agent` | 多 Agent 协作：编排器参数 + 角色定义（角色名/描述/提示词/工具白名单），默认禁用 |
+| `router` | 意图路由：分类参数（llm_timeout/confidence_threshold/fallback_agent）+ 预设 Agent 定义（描述/提示词/工具白名单/触发词/正则/优先级），默认禁用 |
 | `sandbox` | 工具执行沙箱：type（none/native/container）、资源限额（timeout/memory/cpu/processes）、allow_net、on_unavailable 降级策略、container 子节（runtime/image/tmpfs/user） |
 | `policy_file` / `audit_log_path` / `skill_store_path` / `work_dir` | 安全与持久化路径 |
 
@@ -339,6 +483,9 @@ POST /api/v1/chat
 - 记忆持久化（memstore）：长期记忆 + 用户画像统一 Store 抽象，file/sqlite/remote 三后端配置切换；`cmd/memstore` 提供远程记忆服务（serve）与存量画像迁移（migrate）；doctor 增加存储连通性检查
 - 多 Agent 协作（multiagent）：Orchestrator-Worker 模式，`delegate_task` 工具供主 Agent 委派复杂任务；角色 YAML 声明式定义（工具白名单 + 独立提示词），拓扑排序调度 + 并发执行 + Blackboard 结果共享；Worker 最小权限 + 安全门禁继承 + 无环检测
 - 工具执行沙箱（sandbox）：shell_exec / code_run 经 `internal/sandbox` 接口驱动执行隔离，三档可选（none 直通 / native 命名空间+Seatbelt / container 容器）；资源限额（内存/CPU/进程数/网络）统一配置；不可用时按 on_unavailable 降级或拒绝启动；doctor 增加沙箱可用性探测
+- 运维加固：HTTP 层 per-user 频率限流（`server.rate_limit`）+ session 层全局并发信号量（`session.max_concurrent_runs`）+ chat 请求级超时（`server.request_timeout`，超时 504）；全项目迁移至 `log/slog` 结构化日志（`log` 段可配 format/level/output）；`X-Request-ID` 中间件（生成或透传，注入 context + 响应头 + 日志）；健康检查拆分 liveness（`/health`）与 readiness（`/ready`，探测 Gateway/SessionMgr/MemStore）；SIGHUP 触发 policy.yaml 热加载；语义缓存条数 + 字节双上界淘汰；memstore sqlite 层 WAL + 后台写 worker 异步化
+- 工程化：Makefile（build/test/lint/vet/cover/clean）、golangci-lint 配置与 CI 步骤
+- 意图路由（router）：请求进入 ReAct 循环前做意图分类（规则优先 → LLM 兜底 → 静默回落 general），分派给预设专职 Agent（独立提示词 + 工具白名单）；复用会话唯一 Engine（`SystemPromptProvider` 换提示词 + 过滤型 `ToolCaller` 收窄工具集），共享用户记忆与三道门禁；实现在 session 层故 HTTP / CLI / 8 渠道全入口生效；默认禁用
 
 ### P2 路线图（未实现，代码中已标注）
 
@@ -347,9 +494,10 @@ POST /api/v1/chat
 | 语义缓存 L2 | 向量相似层，依赖 embedding 模型 |
 | 进度流式推送 | 需 session 暴露中间步骤事件 |
 | 渠道状态端点 | GET /api/v1/channels 状态管理 |
+| per-agent 模型选择 | `RoleDef.Model` / `AgentSpec` 均为预留字段，需先扩展 `engine.LLMClient` 支持 per-call 模型 |
 
 ## 8. 测试与工程
 
-- 全量 `go test ./...`（25 包）离线可跑；关键接线均有针对性单测（缓存键含工具、预算门禁、usage 端点、门控四条件、版本快照、db 缓存正确性约束、沙箱超时按进程组整树终止等）
-- CI：gofmt / vet / test / 双平台编译
+- 全量 `go test ./...`（27 包）离线可跑；关键接线均有针对性单测（缓存键含工具、预算门禁、usage 端点、门控四条件、版本快照、db 缓存正确性约束、沙箱超时按进程组整树终止、限流与并发信号量、Request-ID 生成与透传、热加载、memstore 异步写落盘、意图路由分类与降级链路等）
+- CI：gofmt / vet / golangci-lint / test / 双平台编译
 - 平台：macOS / Linux（`internal/sandbox/native_*.go` 提供 darwin/linux 原生沙箱实现，Windows 无对应实现）

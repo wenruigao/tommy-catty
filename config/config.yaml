@@ -416,3 +416,94 @@ work_dir: "."
 #         - 保留关键数据和引用来源
 #       tools: ["file_read", "file_write"]
 #       max_iterations: 10
+
+
+# ────────────────────────────────────────────────────────────
+# 意图路由（入口级分类 + 预设 Agent 分派）
+# ────────────────────────────────────────────────────────────
+# 启用后，请求进入 ReAct 循环之前先对用户问题做意图分类，分派给对应的
+# 预设专职 Agent（独立系统提示词 + 工具白名单）。分类链路为
+# 「规则优先（零成本零延迟）→ LLM 兜底 → 静默回落 general」，
+# 任何异常都回落兜底 Agent，因此路由不会成为请求路径上的新失败点。
+#
+# 与 multi_agent 的区别：路由由系统在入口自动分类触发，复用会话唯一 Engine
+# 并共享用户记忆；multi_agent 由主 Agent 主动调用 delegate_task 触发，
+# 每子任务新建独立 Worker。两者可并存（路由选中的 Agent 仍可调用 delegate_task）。
+#
+# 安全约束：工具白名单只做收窄不做扩张——ToToolDefs 仅返回注册表中真实存在的
+# 工具，故白名单无法凭空授予能力；ToolGate/OutputGate 原样继承；Agent 的
+# system_prompt 仅替换 base prompt，仍与 agent.md/soul.md/用户画像一并组装，
+# 故 config/agent.md 的权限边界保持最高优先级。
+#
+# 注意：web_search / db_query / kb_* 属于**有条件注册**的工具，分别依赖
+# search / databases / knowledge_bases 配置段。未配置对应能力时，白名单中
+# 引用它们只会在启动日志产生告警（不影响启动，其余工具正常生效）。
+# 下方 researcher / analyst / writer 预设即引用了这类工具，按需启用对应配置段。
+#
+# 未配置或 enabled: false 时行为与旧版完全一致。
+#
+# router:
+#   enabled: true
+#   llm_timeout: "5s"                # LLM 分类调用超时（超时即回落兜底 Agent）
+#   confidence_threshold: 0.6        # 置信度阈值，低于此值回落兜底 Agent
+#   fallback_agent: "general"        # 兜底 Agent 名，必须存在于 agents 中
+#   use_llm: true                    # 规则未命中时是否调用 LLM 分类
+#                                    # 置 false 则只用规则匹配（零成本零延迟）
+#
+#   agents:
+#     general:
+#       description: "通用助手，处理意图不明确或需要综合多种能力的请求"
+#       system_prompt: |
+#         你是一个通用智能助手，根据用户请求自主选择合适的方式完成任务。
+#       tools: []                    # 空 = 不限制工具
+#       priority: 0
+#
+#     researcher:
+#       description: "信息检索与调研专家，擅长网络搜索、网页阅读和知识库查询"
+#       system_prompt: |
+#         你是一名专业的信息研究员。你的任务是检索并整理信息，输出结构化结论。
+#         规则：
+#         - 优先使用多个来源交叉验证
+#         - 输出必须标明信息来源
+#         - 信息不足时明确指出缺口
+#       tools: ["web_search", "web_fetch", "kb_search", "kb_read", "kb_list"]
+#       keywords: ["搜索", "查找", "查一下", "最新", "新闻", "调研", "对比", "资料"]
+#       patterns: ['^(帮我)?(搜|查|找)一?(下|个)?']
+#       priority: 10
+#
+#     coder:
+#       description: "编程与命令执行专家，擅长编写调试代码、执行 shell 命令、读写文件"
+#       system_prompt: |
+#         你是一名资深软件工程师。你的任务是编写代码、执行命令、排查问题。
+#         规则：
+#         - 代码须包含必要的错误处理
+#         - 执行命令前说明其作用
+#         - 输出包含关键结果摘要
+#       tools: ["code_run", "shell_exec", "file_read", "file_write"]
+#       keywords: ["代码", "脚本", "报错", "编译", "运行", "执行", "debug", "bug", "函数"]
+#       patterns: ['^(帮我)?(写|实现|修复|调试).*?(代码|脚本|函数|程序|bug)$']
+#       priority: 20
+#
+#     analyst:
+#       description: "数据查询与分析专家，擅长 SQL 查询、数据统计与报表生成"
+#       system_prompt: |
+#         你是一名数据分析师。你的任务是查询数据、统计分析并给出结论。
+#         规则：
+#         - 说明查询的口径与范围
+#         - 关键数字需可复核
+#         - 结论与数据分离表述
+#       tools: ["db_query", "code_run", "file_read"]
+#       keywords: ["查询", "sql", "数据库", "统计", "报表", "多少条", "分析数据"]
+#       priority: 15
+#
+#     writer:
+#       description: "文档撰写与内容整理专家，擅长写作、总结、翻译与润色"
+#       system_prompt: |
+#         你是一名专业技术文档撰写者。你的任务是产出结构清晰、表达准确的文本。
+#         规则：
+#         - 善用标题、列表、表格组织内容
+#         - 语言简洁准确，避免冗余
+#         - 保留关键数据与引用来源
+#       tools: ["file_read", "file_write", "kb_search", "kb_read"]
+#       keywords: ["写一", "文档", "总结", "翻译", "润色", "报告", "起草", "改写"]
+#       priority: 10

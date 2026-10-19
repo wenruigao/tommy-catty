@@ -19,10 +19,10 @@ import (
 	"github.com/wenruigao/tommy-catty/config"
 	"github.com/wenruigao/tommy-catty/internal/bootstrap"
 	"github.com/wenruigao/tommy-catty/internal/channel"
-	"github.com/wenruigao/tommy-catty/internal/logger"
 	"github.com/wenruigao/tommy-catty/internal/ctxmgr"
 	"github.com/wenruigao/tommy-catty/internal/engine"
 	"github.com/wenruigao/tommy-catty/internal/llm"
+	"github.com/wenruigao/tommy-catty/internal/logger"
 	"github.com/wenruigao/tommy-catty/internal/memstore"
 	"github.com/wenruigao/tommy-catty/internal/search"
 	"github.com/wenruigao/tommy-catty/internal/security"
@@ -173,6 +173,20 @@ func main() {
 		}
 	}
 
+	// 构建意图路由器（router.enabled=false 时返回 nil，行为与旧版一致）
+	intentRouter, routerWarnings, routerErr := bootstrap.RegisterRouter(cfg, registry, llmAdp)
+	if routerErr != nil {
+		fmt.Printf("  ❌ 意图路由初始化失败: %v\n", routerErr)
+		os.Exit(1)
+	}
+	for _, w := range routerWarnings {
+		fmt.Printf("  ⚠️  %s\n", w)
+	}
+	if intentRouter != nil {
+		fmt.Printf("  🧭 意图路由: %s（兜底 %s）\n",
+			strings.Join(intentRouter.AgentNames(), ", "), intentRouter.FallbackAgent())
+	}
+
 	// 加载 Agent 人格文件（缺失时使用内置兜底文本并警告）
 	agentMD, err := session.LoadPersonaFile(cfg.Persona.AgentMDPath, session.DefaultAgentMD)
 	if err != nil {
@@ -282,6 +296,8 @@ func main() {
 		RateLimit: session.RateLimitConfig{
 			RequestsPerMinute: cfg.Session.RequestsPerMinute,
 		},
+		// 意图路由：nil 时 session 层完全跳过路由，行为与旧版一致
+		Router: intentRouter,
 	}
 
 	smCfg := session.ManagerConfig{

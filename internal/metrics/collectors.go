@@ -55,6 +55,11 @@ const (
 	MetricAgentWorkerDuration = "tommy_agent_worker_duration_seconds"
 )
 
+// 意图路由层指标
+const (
+	MetricRouterDecisions = "tommy_router_decisions_total"
+)
+
 // 运行时指标
 const (
 	MetricRuntimeMemory     = "tommy_runtime_memory_bytes"
@@ -107,6 +112,9 @@ var (
 	agentWorkers        *CounterVec
 	agentWorkerDuration *CounterVec
 
+	// 意图路由层
+	routerDecisions *CounterVec
+
 	// 运行时
 	runtimeMemory     *Gauge
 	runtimeGoroutines *Gauge
@@ -155,6 +163,9 @@ func ensureRegistered() {
 		agentDelegations = r.RegisterCounter(MetricAgentDelegations, "delegate_task 调用总数")
 		agentWorkers = r.RegisterCounterVec(MetricAgentWorkers, "Worker 执行总数")
 		agentWorkerDuration = r.RegisterCounterVec(MetricAgentWorkerDuration, "Worker 累计执行耗时（秒）")
+
+		// 意图路由层
+		routerDecisions = r.RegisterCounterVec(MetricRouterDecisions, "意图路由决策总数")
 
 		// 运行时
 		runtimeMemory = r.RegisterGauge(MetricRuntimeMemory, "当前进程内存占用（字节）")
@@ -229,6 +240,9 @@ func AgentWorkers() *CounterVec { ensureRegistered(); return agentWorkers }
 
 // AgentWorkerDuration 返回 Worker 累计执行耗时计数器（labels: role）。
 func AgentWorkerDuration() *CounterVec { ensureRegistered(); return agentWorkerDuration }
+
+// RouterDecisions 返回意图路由决策计数器（labels: agent, method）。
+func RouterDecisions() *CounterVec { ensureRegistered(); return routerDecisions }
 
 // DBQueryCacheHits 返回 db_query 缓存命中计数器。
 func DBQueryCacheHits() *Counter { ensureRegistered(); return dbQueryCacheHits }

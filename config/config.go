@@ -75,6 +75,9 @@ type Config struct {
 
 	// MultiAgent 多 Agent 协作配置（Orchestrator-Worker 模式，默认禁用）
 	MultiAgent MultiAgentConfig `yaml:"multi_agent"`
+
+	// Router 意图路由配置（入口级分类 + 预设 Agent 分派，默认禁用）
+	Router RouterConfig `yaml:"router"`
 }
 
 // PersonaConfig Agent 人格体系配置
@@ -555,6 +558,70 @@ type MultiAgentRoleEntry struct {
 	MaxConcurrent int `yaml:"max_concurrent"`
 }
 
+// RouterConfig 意图路由配置（入口级分类 + 预设 Agent 分派）。
+//
+// 与 MultiAgentConfig 的区别：路由由系统在请求入口自动分类触发，复用会话唯一
+// Engine 并共享用户记忆；multi_agent 由主 Agent 主动调用 delegate_task 触发，
+// 每子任务新建独立 Worker Engine。两者可并存。
+type RouterConfig struct {
+	// Enabled 是否启用意图路由（默认 false，关闭时行为与旧版完全一致）
+	Enabled bool `yaml:"enabled"`
+
+	// LLMTimeout LLM 分类调用超时（如 "5s"，默认 5s）；超时即回落兜底 Agent
+	LLMTimeout string `yaml:"llm_timeout"`
+
+	// ConfidenceThreshold 置信度阈值（默认 0.6）；低于此值的分类结果回落兜底 Agent
+	ConfidenceThreshold float64 `yaml:"confidence_threshold"`
+
+	// FallbackAgent 兜底 Agent 名（默认 "general"），必须存在于 Agents 中
+	FallbackAgent string `yaml:"fallback_agent"`
+
+	// UseLLM 规则未命中时是否调用 LLM 分类（默认 true）。
+	// 置 false 可完全关闭 LLM 兜底，只用规则匹配（零成本零延迟）。
+	// 指针类型以区分「未配置」与「显式配置为 false」。
+	UseLLM *bool `yaml:"use_llm"`
+
+	// Agents 预设 Agent 定义（key 为 Agent 名）
+	Agents map[string]RouterAgentEntry `yaml:"agents"`
+}
+
+// RouterAgentEntry 单个预设 Agent 的 YAML 配置。
+type RouterAgentEntry struct {
+	// Description 能力描述（供 LLM 分类判断适用场景）
+	Description string `yaml:"description"`
+	// SystemPrompt Agent 专属系统提示词（仅替换 base prompt，
+	// 仍经 session.BuildSystemPrompt 与 agent.md/soul.md/用户画像组装）
+	SystemPrompt string `yaml:"system_prompt"`
+	// Tools 工具白名单；空表示不限制（兜底 Agent 通常留空）
+	Tools []string `yaml:"tools"`
+	// Keywords 规则触发词（大小写不敏感的子串匹配）
+	Keywords []string `yaml:"keywords"`
+	// Patterns 规则触发的正则表达式（启动期预编译，编译失败拒绝启动）
+	Patterns []string `yaml:"patterns"`
+	// Priority 规则优先级，数值大者先匹配（默认 0）
+	Priority int `yaml:"priority"`
+	// MaxIterations 可选，覆盖会话默认的最大 ReAct 迭代次数
+	MaxIterations int `yaml:"max_iterations"`
+}
+
+// RouterLLMTimeout 解析 LLM 分类超时，解析失败时返回 5 秒。
+func (c *Config) RouterLLMTimeout() time.Duration {
+	if c.Router.LLMTimeout != "" {
+		if d, err := time.ParseDuration(c.Router.LLMTimeout); err == nil {
+			return d
+		}
+	}
+	return 5 * time.Second
+}
+
+// RouterUseLLM 返回是否启用 LLM 分类兜底（未配置时默认 true）。
+func (c *Config) RouterUseLLM() bool {
+	if c.Router.UseLLM == nil {
+		return true
+	}
+	return *c.Router.UseLLM
+}
+
 // Load 从 YAML 文件加载配置
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -668,6 +735,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Session.MaxConcurrentRuns == 0 {
 		c.Session.MaxConcurrentRuns = 10
+	}
+	if c.Router.FallbackAgent == "" {
+		c.Router.FallbackAgent = "general"
 	}
 	if c.Search.DefaultEngine == "" {
 		c.Search.DefaultEngine = "duckduckgo"

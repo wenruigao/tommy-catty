@@ -107,11 +107,13 @@ internal/
   search/             搜索引擎抽象（DuckDuckGo / Tavily）
   kb/                 本地知识库：分块、分词、内存倒排索引（BM25 检索）
   mcp/                MCP 客户端（stdio / SSE 传输），发现并调用远程工具（经 config 的 `mcp.servers` 段装配，由 bootstrap.RegisterMCPTools 注册）
-  server/             HTTP handler 与认证中间件
+  server/             HTTP handler、认证中间件、per-user 限流、Request-ID、热加载（SIGHUP）
   bootstrap/          启动装配：根据配置构建数据源连接池与知识库，注册 db_query / kb_* 工具
   doctor/             健康自检（10 项检查，支持自动修复）
   trace/              执行追踪（span 记录，可选 JSONL 导出，配置 engine.trace_export_path）
   multiagent/         多 Agent 协作（Orchestrator-Worker 模式，delegate_task 工具）
+  logger/             结构化日志初始化（log/slog，text/json 格式，配置 log 段）
+  router/             意图路由（规则优先 + LLM 兜底，分派预设 Agent；见技术方案 §3.12）
 data/                 运行时数据（Skill、审计日志、用户画像与长期记忆持久化）
 bin/                  构建产物
 ```
@@ -125,6 +127,8 @@ bin/                  构建产物
 - **Channel 接入层**: `config/config.yaml` 增加 `channels` 段即可接入，会话键 `"渠道名:用户/群ID"` 与 HTTP 身份隔离，限流/门禁/审计自动生效；未配置时接入层不启动，行为与旧版完全一致。
 - **记忆分层存储**: remote 全量 + sqlite/file 按保留窗口（未配远端时 sqlite 全量）；首次配远端自动回迁存量；会话创建预热最近历史。
 - **多 Agent 协作**: 配置 `multi_agent.enabled: true` 后注册 `delegate_task` 工具，主 Agent 可将复杂任务分解并委派给多个专职 Worker Agent。
+- **意图路由**: 配置 `router.enabled: true` 后，请求进入 ReAct 循环前先分类（规则优先 → LLM 兜底 → 回落 general），分派给预设专职 Agent。复用会话唯一 Engine（经 `SystemPromptProvider` 换提示词 + 过滤型 `ToolCaller` 收窄工具集），共享用户记忆与门禁。实现在 session 层，HTTP / CLI / 渠道全入口自动生效。详见技术方案 §3.12。
+- **运维中间件**: HTTP 层 per-user 频率限流（`server.rate_limit`）+ session 层全局并发信号量（`session.max_concurrent_runs`）+ chat 请求级超时（`server.request_timeout`，超时 504）+ `X-Request-ID` 生成/透传；健康检查拆分 `/api/v1/health`（liveness）与 `/api/v1/ready`（readiness）；SIGHUP 触发 policy.yaml 热加载。
 - **工具执行沙箱**: `config/config.yaml` 的 `sandbox` 段为 shell_exec / code_run 提供 OS 级执行隔离（`internal/sandbox` 接口驱动）：`none`（默认，直通）/ `native`（Linux 非特权用户命名空间 + rlimit + 独立 tmpfs /tmp；macOS sandbox-exec Seatbelt）/ `container`（docker/podman 只读根文件系统 + 禁网 + 资源限额）。默认禁网；沙箱不可用时按 `on_unavailable` 降级（degrade）或拒绝启动（error）。装配收敛于 `bootstrap.RegisterBuiltinTools`（CLI 与 HTTP 入口共享）。
 
 ## 内置工具与风险等级
@@ -169,14 +173,15 @@ bin/                  构建产物
 - 测试文件与源码同包（`*_test.go`），使用标准 `testing` 包，无第三方测试框架。
 - 所有测试均为离线单元测试，不依赖真实 LLM API 或网络，可直接运行 `go test ./...`。
 - 集成测试通过导入 `modernc.org/sqlite` 驱动 + 内存数据库实现（见 `internal/tool/dbquery/tool_integration_test.go`、`internal/bootstrap/bootstrap_test.go`）。
-- 已有测试覆盖：config、llm（重试/缓存/类型）、engine、security、memory、memstore、skill、session、ctxmgr、tool（含 sanitizer）、dbquery、kbtools、kb、mcp、trace、bootstrap、registry、metrics、multiagent、sandbox（含超时按进程组整树终止的回归测试）。
-- 尚无测试的包：cmd/*、doctor——修改这些包时建议补充测试。
-- 修改代码后务必运行 `go build ./... && go vet ./... && go test ./...` 验证。
+- 已有测试覆盖：config、llm（重试/缓存/类型）、engine、security、memory、memstore（含异步写落盘）、skill、session、ctxmgr、tool（含 sanitizer）、dbquery、kbtools、kb、mcp、trace、bootstrap、registry、metrics、multiagent、sandbox（含超时按进程组整树终止的回归测试）、doctor、server（限流/Request-ID/readiness/热加载）、cmd/memstore。
+- 尚无测试的包：cmd/agent、cmd/server 主体——修改这些包时建议补充测试。
+- 修改代码后务必运行 `go build ./... && go vet ./... && go test ./...` 验证（或 `make check`）。
 
 ## 其他说明
 
 - 项目根目录有两份中文 Word 文档（`AI_Agent_技术方案.docx`、`Tommy-Cat_Agent_使用手册.docx`），包含更详细的设计与使用说明。
 - `data/skills.json` 与 `data/users/`（每用户 user.md 画像）为运行时生成内容，不要手工编辑（user.md 允许用户手工修改，profiler 更新时会保留仍有效的旧偏好）。
-- 无 Makefile、无 lint 配置文件——构建测试均直接使用 `go` 命令。CI 配置为 `.github/workflows/ci.yml`（gofmt 检查、vet、test、linux/darwin 交叉编译）。
-- `go` 工具链若不在 PATH，可尝试 `~/local/go/bin/go` 或 `~/go-sdk/go/bin/go`（本机已验证 go 1.26 工具链可正常构建并通过全部测试）。
+- **有 Makefile 与 `.golangci.yml`**：`make build/test/lint/vet/cover/clean/check`（`check` = fmt + vet + test）。CI 配置为 `.github/workflows/ci.yml`（gofmt 检查、vet、golangci-lint、test、linux/darwin 交叉编译）。
+- `go` 工具链若不在 PATH，可尝试 `/opt/homebrew/bin/go`（Homebrew 安装，本机已验证）或 `~/local/go/bin/go`、`~/go-sdk/go/bin/go`。
 - 手动测试清单见 `手动运行手册.md`（含完整功能测试项，分环境准备、内置工具、安全策略、记忆、HTTP 服务、Channel 接入等章节）。
+- 新增子系统后须同步更新 `AI_Agent_技术方案.md`（权威设计记录）与 `docs/ARCHITECTURE.md`，并核对实现与设计一致。
