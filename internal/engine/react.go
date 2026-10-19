@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/wenruigao/tommy-catty/internal/ctxmgr"
@@ -55,7 +56,7 @@ func (e *Engine) Run(ctx context.Context, goal string) (traceResult *ExecutionTr
 		select {
 		case <-ctx.Done():
 			trace.EndTime = time.Now()
-			trace.Error = "context cancelled: " + ctx.Err().Error()
+			trace.Error = "context canceled: " + ctx.Err().Error()
 			return trace, ctx.Err()
 		default:
 		}
@@ -280,7 +281,12 @@ func (e *Engine) applyContextManagement(ctx context.Context, messages []llm.Mess
 	for i, msg := range compressed {
 		m := llm.Message{Role: msg.Role, Content: msg.Content, ToolCallID: msg.ToolCallID}
 		if msg.ToolCalls != "" {
-			json.Unmarshal([]byte(msg.ToolCalls), &m.ToolCalls)
+			// 解析失败不能静默吞掉：丢失 tool_calls 会让后续带 tool_call_id 的
+			// 消息失去对应调用，供应商可能直接报错或模型产生混乱输出。
+			if err := json.Unmarshal([]byte(msg.ToolCalls), &m.ToolCalls); err != nil {
+				slog.Warn("engine: 上下文中的 tool_calls 解析失败，该消息将丢失工具调用",
+					"index", i, "role", msg.Role, "error", err)
+			}
 		}
 		result[i] = m
 	}

@@ -6,6 +6,7 @@ package dbquery
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -265,16 +266,19 @@ func checkDeniedColumns(sql string, tables []string, denied []string) string {
 var limitRe = regexp.MustCompile(`(?i)\bLIMIT\s+(\d+)`)
 
 // injectLimit 确保 SQL 有不超过 max 的 LIMIT 约束。
+//
+// 解析已有 LIMIT 失败时一律钳制（fail-closed）：正则只捕获数字，但超出 int
+// 范围的值（如 LIMIT 99999999999999999999）会解析失败，若按 0 处理并原样放行，
+// 行数上限就被完全绕过了。
 func injectLimit(sql string, max int) string {
 	m := limitRe.FindStringSubmatch(sql)
 	if m == nil {
 		// 无 LIMIT，追加
 		return fmt.Sprintf("%s LIMIT %d", sql, max)
 	}
-	// 已有 LIMIT，若超过上限则覆盖
-	var existing int
-	fmt.Sscanf(m[1], "%d", &existing)
-	if existing > max {
+	// 已有 LIMIT：解析失败视为超限，覆盖为上限
+	existing, err := strconv.Atoi(m[1])
+	if err != nil || existing > max {
 		return limitRe.ReplaceAllString(sql, fmt.Sprintf("LIMIT %d", max))
 	}
 	return sql

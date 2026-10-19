@@ -493,7 +493,7 @@ func TestSSETransport_ContextCancelled(t *testing.T) {
 
 	_, err := tr.Send(ctx, &JSONRPCRequest{Method: "test"})
 	if err == nil {
-		t.Error("expected error on cancelled context")
+		t.Error("expected error on canceled context")
 	}
 }
 

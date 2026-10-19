@@ -16,7 +16,6 @@ type asyncOp struct {
 	entry  memory.MemoryEntry
 	userID string
 	query  string
-	topK   int
 	cutoff time.Time
 	done   chan error // 可选：调用方需要等待结果时使用
 }

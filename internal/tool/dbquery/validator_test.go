@@ -187,3 +187,61 @@ func TestCTE(t *testing.T) {
 		t.Errorf("CTE SELECT should pass: %v", err)
 	}
 }
+
+// ============================================================
+// injectLimit：行数上限注入
+// ============================================================
+
+func TestInjectLimit_AppendsWhenMissing(t *testing.T) {
+	got := injectLimit("SELECT * FROM users", 100)
+	if got != "SELECT * FROM users LIMIT 100" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestInjectLimit_KeepsSmallerLimit(t *testing.T) {
+	got := injectLimit("SELECT * FROM users LIMIT 10", 100)
+	if got != "SELECT * FROM users LIMIT 10" {
+		t.Errorf("smaller LIMIT should be preserved, got %q", got)
+	}
+}
+
+func TestInjectLimit_ClampsLargerLimit(t *testing.T) {
+	got := injectLimit("SELECT * FROM users LIMIT 5000", 100)
+	if got != "SELECT * FROM users LIMIT 100" {
+		t.Errorf("larger LIMIT should be clamped, got %q", got)
+	}
+}
+
+func TestInjectLimit_ClampsEqualLimit(t *testing.T) {
+	// 等于上限属合法，不应改写
+	got := injectLimit("SELECT * FROM users LIMIT 100", 100)
+	if got != "SELECT * FROM users LIMIT 100" {
+		t.Errorf("equal LIMIT should be preserved, got %q", got)
+	}
+}
+
+// TestInjectLimit_OverflowIsClamped 是安全回归测试：
+// 超出 int 范围的 LIMIT 值解析失败，必须钳制而非原样放行，
+// 否则 `LIMIT 99999999999999999999` 可完全绕过行数上限。
+func TestInjectLimit_OverflowIsClamped(t *testing.T) {
+	got := injectLimit("SELECT * FROM users LIMIT 99999999999999999999", 100)
+	if got != "SELECT * FROM users LIMIT 100" {
+		t.Errorf("overflowing LIMIT must be clamped (fail-closed), got %q", got)
+	}
+}
+
+func TestInjectLimit_CaseInsensitive(t *testing.T) {
+	got := injectLimit("SELECT * FROM users limit 5000", 100)
+	if !strings.Contains(strings.ToUpper(got), "LIMIT 100") {
+		t.Errorf("lowercase limit should be clamped, got %q", got)
+	}
+}
+
+func TestInjectLimit_ClampsAllOccurrences(t *testing.T) {
+	// 子查询与外层都有 LIMIT 时，两处都应被钳制
+	got := injectLimit("SELECT * FROM (SELECT * FROM t LIMIT 9999) x LIMIT 9999", 100)
+	if strings.Contains(got, "9999") {
+		t.Errorf("all LIMIT clauses should be clamped, got %q", got)
+	}
+}

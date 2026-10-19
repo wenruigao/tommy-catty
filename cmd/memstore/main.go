@@ -51,7 +51,14 @@ func runServe(args []string) {
 	db := fs.String("db", "data/memory.db", "sqlite 后端数据库路径")
 	profiles := fs.String("profiles", "data/users", "file 后端画像目录")
 	max := fs.Int("max-entries", 500, "每用户长期记忆上限")
-	fs.Parse(args)
+	// ExitOnError 下非法参数会直接退出，但 -h/--help 返回 flag.ErrHelp 而不退出；
+	// 不处理会导致打印帮助后仍照常启动服务。
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			os.Exit(0)
+		}
+		log.Fatalf("serve: 参数解析失败: %v", err)
+	}
 
 	var store memstore.Store
 	var err error
@@ -90,7 +97,13 @@ func runMigrate(args []string) {
 	db := fs.String("db", "data/memory.db", "sqlite 目标数据库路径")
 	url := fs.String("url", "", "remote 目标服务地址")
 	token := fs.String("token", os.Getenv("MEMSTORE_TOKEN"), "remote 目标鉴权令牌")
-	fs.Parse(args)
+	// 同 runServe：必须处理 -h/--help 返回的 flag.ErrHelp，否则打印帮助后仍会执行迁移
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			os.Exit(0)
+		}
+		log.Fatalf("migrate: 参数解析失败: %v", err)
+	}
 
 	var store memstore.Store
 	var err error

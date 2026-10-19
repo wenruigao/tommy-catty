@@ -344,7 +344,7 @@ func RegisterRouter(
 	var warnings []string
 	registered := make(map[string]bool, len(registry.List()))
 	for _, m := range registry.List() {
-		registered[m.Tool.Name()] = true
+		registered[m.Name()] = true
 	}
 	for name, spec := range agents {
 		missing := make([]string, 0)

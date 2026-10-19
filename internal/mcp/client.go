@@ -103,8 +103,11 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 	c.serverInfo = initResult.ServerInfo
 
-	// 发送 initialized 通知
-	c.transport.Notify(ctx, "notifications/initialized", nil)
+	// 发送 initialized 通知（尽力而为：失败不中断握手，但记录以便诊断
+	// 后续 discoverTools 异常是否源于服务端未收到就绪通知）
+	if err := c.transport.Notify(ctx, "notifications/initialized", nil); err != nil {
+		slog.Warn("mcp: initialized 通知发送失败", "server", c.cfg.Name, "error", err)
+	}
 
 	// 发现工具
 	if err := c.discoverTools(ctx); err != nil {

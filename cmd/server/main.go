@@ -398,7 +398,10 @@ func main() {
 		fmt.Println("\n  正在关闭服务...")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		srv.Shutdown(ctx)
+		// 优雅关闭失败（超时或连接未排空）需可诊断，不能静默吞掉
+		if err := srv.Shutdown(ctx); err != nil {
+			fmt.Printf("  ⚠️  HTTP 服务优雅关闭失败: %v\n", err)
+		}
 		sessionMgr.Shutdown()
 	}()
 

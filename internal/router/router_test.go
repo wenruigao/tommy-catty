@@ -321,7 +321,7 @@ func TestClassify_CancelledContext_FallsBack(t *testing.T) {
 
 	d := r.Classify(ctx, "无触发词")
 	if d.Method != MethodFallback {
-		t.Errorf("method = %q, want fallback on cancelled context", d.Method)
+		t.Errorf("method = %q, want fallback on canceled context", d.Method)
 	}
 }
 

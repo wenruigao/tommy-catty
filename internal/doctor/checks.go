@@ -151,7 +151,9 @@ func checkConfigFile(cfg DoctorConfig) Check {
 			// 如果配置文件不存在，创建默认配置
 			if _, err := os.Stat(cfg.ConfigPath); os.IsNotExist(err) {
 				dir := filepath.Dir(cfg.ConfigPath)
-				os.MkdirAll(dir, 0755)
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					return false, fmt.Sprintf("failed to create directory %s: %v", dir, err)
+				}
 				defaultCfg := `llm:
   default_provider: "deepseek"
   fallback_provider: "qwen"
@@ -283,7 +285,9 @@ func checkSecurityPolicy(cfg DoctorConfig) Check {
 		Fix: func(ctx context.Context) (bool, string) {
 			if _, err := os.Stat(cfg.PolicyPath); os.IsNotExist(err) {
 				dir := filepath.Dir(cfg.PolicyPath)
-				os.MkdirAll(dir, 0755)
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					return false, fmt.Sprintf("failed to create directory %s: %v", dir, err)
+				}
 				defaultPolicy := `policies:
   - id: block-destructive
     name: "Block destructive operations"
@@ -389,8 +393,14 @@ func checkSkillStore(cfg DoctorConfig) Check {
 				var check []interface{}
 				if json.Unmarshal(data, &check) != nil {
 					backup := cfg.SkillStorePath + ".bak"
-					os.WriteFile(backup, data, 0644)
-					os.WriteFile(cfg.SkillStorePath, []byte("[]"), 0644)
+					// 备份失败则不重置：宁可保留损坏文件交由人工处理，
+					// 也不能在没有备份的情况下销毁用户数据。
+					if err := os.WriteFile(backup, data, 0644); err != nil {
+						return false, fmt.Sprintf("failed to back up corrupted file: %v", err)
+					}
+					if err := os.WriteFile(cfg.SkillStorePath, []byte("[]"), 0644); err != nil {
+						return false, fmt.Sprintf("failed to reset corrupted file: %v", err)
+					}
 					return true, fmt.Sprintf("reset corrupted file (backup: %s)", filepath.Base(backup))
 				}
 			}

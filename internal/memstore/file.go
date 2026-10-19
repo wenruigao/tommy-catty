@@ -230,8 +230,18 @@ func (s *FileStore) writeAllLocked(userID string, entries []MemoryDTO) error {
 			os.Remove(tmp)
 			return err
 		}
-		w.Write(data)
-		w.WriteByte('\n')
+		// bufio 写入错误虽会在 Flush 时浮现，但失败后继续写后续条目已无意义，
+		// 尽早退出并清理临时文件，避免留下半截数据。
+		if _, err := w.Write(data); err != nil {
+			f.Close()
+			os.Remove(tmp)
+			return err
+		}
+		if err := w.WriteByte('\n'); err != nil {
+			f.Close()
+			os.Remove(tmp)
+			return err
+		}
 	}
 	if err := w.Flush(); err != nil {
 		f.Close()

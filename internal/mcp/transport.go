@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -162,9 +163,17 @@ func (t *StdioTransport) Close() error {
 	done := make(chan error, 1)
 	go func() { done <- t.cmd.Wait() }()
 	select {
-	case <-done:
+	case err := <-done:
+		// 子进程已退出；非零退出码在关闭路径上无需上抛，但记录以便排查
+		if err != nil {
+			slog.Debug("mcp: stdio 子进程退出", "error", err)
+		}
 	case <-time.After(3 * time.Second):
-		t.cmd.Process.Kill()
+		// 超时后强杀。Kill 失败意味着子进程可能残留，必须留痕而非静默吞掉
+		if err := t.cmd.Process.Kill(); err != nil {
+			slog.Warn("mcp: stdio 子进程优雅退出超时，强制终止失败（可能残留进程）",
+				"pid", t.cmd.Process.Pid, "error", err)
+		}
 	}
 	return nil
 }
