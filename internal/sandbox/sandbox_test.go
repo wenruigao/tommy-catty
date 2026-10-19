@@ -122,23 +122,38 @@ func TestNoneSandbox_KillsProcessGroupOnCancel(t *testing.T) {
 	}
 }
 
-// TestNew_KindDispatch 验证工厂按类型分发。
+// TestNew_KindDispatch 验证工厂按类型分发到正确的实现。
+//
+// container 用前缀断言而非全等：Container.Name() 的约定是探测到运行时时
+// 返回 "container:<runtime>"（如 container:docker），未探测到时返回 "container"。
+// 若断言全等，测试就变成依赖「主机是否安装 docker/podman」——本地无 docker
+// 会过，而装了 docker 的 CI runner 会失败。本测试的意图只是验证工厂分发，
+// 不应耦合主机环境。
 func TestNew_KindDispatch(t *testing.T) {
 	cfg := Config{}
 	cases := []struct {
 		kind string
 		want string
+		// prefix 为 true 时只做前缀匹配（用于名称含运行时后缀的实现）
+		prefix bool
 	}{
-		{"none", "none"},
-		{"", "none"},
-		{"unknown-kind", "none"},
-		{"native", "native"},
-		{"container", "container"},
+		{kind: "none", want: "none"},
+		{kind: "", want: "none"},
+		{kind: "unknown-kind", want: "none"},
+		{kind: "native", want: "native"},
+		{kind: "container", want: "container", prefix: true},
 	}
 	for _, c := range cases {
 		sb := New(c.kind, cfg)
-		if sb.Name() != c.want {
-			t.Errorf("New(%q).Name() = %q, want %q", c.kind, sb.Name(), c.want)
+		got := sb.Name()
+		if c.prefix {
+			if !strings.HasPrefix(got, c.want) {
+				t.Errorf("New(%q).Name() = %q, want prefix %q", c.kind, got, c.want)
+			}
+			continue
+		}
+		if got != c.want {
+			t.Errorf("New(%q).Name() = %q, want %q", c.kind, got, c.want)
 		}
 	}
 }
